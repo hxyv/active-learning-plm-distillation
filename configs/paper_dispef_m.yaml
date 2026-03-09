@@ -12,20 +12,24 @@ data:
   cache_graphs: false
 
 graph:
-  cutoff: 8.0
-  max_neighbors: 64
+  # Schake computes its own radius graph internally; set cutoff near-zero to skip
+  # the unused dataset-level edge building (avoids O(N^2) CPU cost per sample).
+  cutoff: 0.001
+  max_neighbors: 0
 
 model:
-  name: geo_gnn   # simple_gnn | geo_gnn
-  aa_vocab_size: 21
-  atom_vocab_size: 3
-  aa_emb_dim: 32
-  atom_emb_dim: 8
-  hidden_dim: 128
-  num_layers: 4
-  dropout: 0.1
-  out_dim: 8
-  edge_dim: 4
+  # Schake v2 architecture.
+  name: schake
+  hidden_channels: 32
+  num_layers: 2
+  kernel_size: 18
+  sake_low_cut: 0.25
+  sake_high_cut: 1.0
+  schnet_low_cut: 1.0
+  schnet_high_cut: 2.5
+  max_num_neigh: 10000
+  num_heads: 4
+  num_out_layers: 3
 
 train:
   seed: 42
@@ -41,11 +45,14 @@ train:
   lr_step_size: 3
   lr_gamma: 0.9
 
-  teacher_loss_type: soft_ce   # soft_ce | kl
+  teacher_loss_type: soft_ce
   distill_temperature: 1.0
   lambda_teacher: 1.0
-  lambda_dssp: 0.0
+  lambda_dssp: 1.0
+  require_dssp_labels: true
 
+  # Paper uses official train/test only for DISPEF-M.
+  use_validation: false
   early_stopping_patience: 20
   checkpoint_every: 10
   log_every_steps: 100
@@ -55,9 +62,9 @@ wandb:
   enabled: true
   entity: "xingyuhu95-carnegie-mellon-university"
   project: "pLM_KD"
-  name: ""
+  name: "baseline"
   notes: ""
-  tags: []
+  tags: ["paper"]
 
 s3_sync:
   enabled: false

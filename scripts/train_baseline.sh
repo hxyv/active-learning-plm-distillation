@@ -9,5 +9,5 @@ source "${MINIFORGE_ROOT}/etc/profile.d/conda.sh"
 conda activate "${ENV_PREFIX}"
 
 python -m train.train \
-  --config "${PROJECT_ROOT}/configs/baseline_dispef_m.yaml" \
-  --run-name "dispef_m_geo_gnn"
+  --config "${PROJECT_ROOT}/configs/paper_dispef_m.yaml" \
+  --run-name "paper_schake_distill"

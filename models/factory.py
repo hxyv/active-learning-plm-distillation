@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from models.gnn import GeoDistillGNN, SimpleDistillGNN
+from models.gnn import GeoDistillGNN, SchakeDistillModel, SimpleDistillGNN
 
 
 def build_model(cfg: dict):
@@ -24,5 +24,18 @@ def build_model(cfg: dict):
         return SimpleDistillGNN(**common_kwargs)
     if model_type == "geo_gnn":
         return GeoDistillGNN(edge_dim=model_cfg.get("edge_dim", 4), **common_kwargs)
+    if model_type == "schake":
+        return SchakeDistillModel(
+            hidden_channels=int(model_cfg.get("hidden_channels", 32)),
+            num_layers=int(model_cfg.get("num_layers", 2)),
+            kernel_size=int(model_cfg.get("kernel_size", 18)),
+            sake_low_cut=float(model_cfg.get("sake_low_cut", 0.25)),
+            sake_high_cut=float(model_cfg.get("sake_high_cut", 1.0)),
+            schnet_low_cut=float(model_cfg.get("schnet_low_cut", 1.0)),
+            schnet_high_cut=float(model_cfg.get("schnet_high_cut", 2.5)),
+            max_num_neigh=int(model_cfg.get("max_num_neigh", 10000)),
+            num_heads=int(model_cfg.get("num_heads", 4)),
+            num_out_layers=int(model_cfg.get("num_out_layers", 3)),
+        )
 
     raise ValueError(f"Unknown model type: {model_type}")

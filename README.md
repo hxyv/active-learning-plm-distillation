@@ -1,13 +1,14 @@
 # ESM3 -> GNN Distillation Baseline (DISPEF-M)
 
-Baseline-only implementation of the distillation stage from:
+Reproduction of the distillation stage from:
 
 - Airas and Zhang (2026), *Knowledge Distillation of a Protein Language Model Yields a Foundational Implicit Solvent Model*
 
 Implemented scope:
 
 - `sequence + structure -> teacher ESM3 SS8 probabilities -> student GNN`
-- student trained on soft teacher targets (plus optional DSSP auxiliary loss)
+- student (Schake v2) trained on soft teacher targets plus DSSP auxiliary CE loss
+- paper-faithful training: 120 epochs, batch 50, Adam lr=1e-3, StepLR(γ=0.9, step=3), no validation split
 
 Not implemented:
 
@@ -21,7 +22,7 @@ Not implemented:
 ├── cache/
 ├── checkpoints/
 ├── configs/
-│   └── baseline_dispef_m.yaml
+│   └── paper_dispef_m.yaml
 ├── data/
 │   ├── __init__.py
 │   ├── constants.py
@@ -40,7 +41,9 @@ Not implemented:
 ├── models/
 │   ├── __init__.py
 │   ├── factory.py
-│   └── gnn.py
+│   ├── gnn.py
+│   └── vendor/
+│       └── schake_model_v2.py
 ├── outputs/
 ├── scripts/
 │   ├── download_dispef.sh
@@ -85,9 +88,10 @@ conda env create -p /opt/dlami/nvme/envs/esm3_gnn_distill -f /opt/dlami/nvme/esm
 conda activate /opt/dlami/nvme/envs/esm3_gnn_distill
 
 pip install --upgrade pip
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install pyg-lib torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.3.1+cu121.html
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+pip install torch-scatter torch-cluster -f https://data.pyg.org/whl/torch-2.10.0+cu128.html
 pip install torch-geometric
+pip install mdtraj==1.10.1
 ```
 
 Single-command alternative:
@@ -141,15 +145,15 @@ Or:
 bash /opt/dlami/nvme/esm3_gnn_distill_baseline/scripts/download_dispef.sh
 ```
 
-## 3) Preprocess DISPEF-M (backbone-only)
+## 3) Preprocess DISPEF-M
 
 This step:
 
-- extracts only `N`, `CA`, `C` atoms
-- stores residue identity + atom identity + coordinates
-- keeps one chain/protein as one graph sample
-- for DISPEF `.pt` mode, uses official `*_tr.pt` and `*_te.pt`, then samples validation from train only
-- for structure-file mode, discovers official split if available
+- parses `DISPEF_M_tr.pt` and `DISPEF_M_te.pt` directly
+- extracts `N`, `CA`, `C`, `O` backbone coordinates (in nanometers)
+- computes 8-class DSSP labels from backbone coordinates using mdtraj (version 1.10.1), matching the paper
+- stores residue identity + atom identity + coordinates + DSSP labels per protein as NPZ
+- applies official train/test split; no validation holdout (paper protocol)
 
 ```bash
 source ~/miniforge3/etc/profile.d/conda.sh
@@ -159,7 +163,6 @@ python -m data.preprocess_dispef \
   --raw-root /opt/dlami/nvme/esm3_gnn_distill_baseline/data/raw/dispef \
   --processed-root /opt/dlami/nvme/esm3_gnn_distill_baseline/data/processed \
   --dataset-name dispef_m \
-  --val-fraction 0.1 \
   --seed 42
 ```
 
@@ -171,11 +174,9 @@ bash /opt/dlami/nvme/esm3_gnn_distill_baseline/scripts/preprocess_dispef_m.sh
 
 Notes:
 
-- DISPEF Zenodo release is `.pt` based (`DISPEF_M_tr.pt`/`DISPEF_M_te.pt`); preprocessing now handles this directly.
-- Residue identities are inferred directly from per-residue atom-name patterns in `.pt` mode.
-- Optional: add `--fetch-uniprot-sequences` to override with UniProt sequence where available.
-- Optional DSSP applies only to structure-file mode (`--input-format structure`).
-- By default preprocessing clears old `processed/<dataset>/proteins/*.npz` before writing new output.
+- DISPEF coordinates are stored in nanometers; mdtraj accepts nm natively — no unit conversion needed.
+- DSSP labels are class indices 0-7 mapping to `["G","H","I","T","E","B","S","C"]`.
+- Preprocessing clears old `processed/<dataset>/proteins/*.npz` before writing new output.
 
 ## 4) Generate Teacher Labels (cached)
 
@@ -208,8 +209,6 @@ Optional:
 
 - add `--fetch-uniprot-sequences` if you want to override stored/inferred sequences
 - add `--max-samples 10` for a quick auth/backend smoke test
-
-If your ESM3 SDK/API differs, keep this abstraction and update `teacher/esm3_teacher.py` extraction logic.
 
 Note: in `esm==3.2.x`, secondary-structure logits can be returned as 11-token vocab (`<pad>, <motif>, <unk>, G,H,I,T,E,B,S,C`). The wrapper projects these to SS8 (`G,H,I,T,E,B,S,C`) automatically.
 
@@ -265,21 +264,23 @@ python -m teacher.generate_teacher_labels \
 
 ## 5) Train
 
-Default config matches the paper baseline training schedule:
+Training uses the Schake v2 architecture with the paper protocol:
 
-- `epochs=120`
-- `batch_size=50`
-- `Adam(lr=1e-3)`
-- LR decay `gamma=0.9` every `3` epochs
-- small weight decay
+- Schake v2 (`model.name: schake`, `hidden_channels=32`, `num_layers=2`)
+- official DISPEF-M train/test split; no validation holdout
+- 120 epochs, batch 50, Adam lr=1e-3, StepLR(γ=0.9, step=3), weight decay 1e-6
+- loss: teacher soft-CE + DSSP auxiliary CE (`lambda_teacher=1.0`, `lambda_dssp=1.0`)
+- Schake builds its own radius graph internally (SAKE: 0.25–1.0 nm, SchNet: 1.0–2.5 nm)
+- mixed precision (AMP) enabled
 
 ```bash
 source ~/miniforge3/etc/profile.d/conda.sh
 conda activate /opt/dlami/nvme/envs/esm3_gnn_distill
 
+cd /opt/dlami/nvme/esm3_gnn_distill_baseline
 python -m train.train \
-  --config /opt/dlami/nvme/esm3_gnn_distill_baseline/configs/baseline_dispef_m.yaml \
-  --run-name dispef_m_geo_gnn
+  --config configs/paper_dispef_m.yaml \
+  --run-name baseline
 ```
 
 Or:
@@ -288,7 +289,9 @@ Or:
 bash /opt/dlami/nvme/esm3_gnn_distill_baseline/scripts/train_baseline.sh
 ```
 
-Before training, ensure teacher cache coverage is complete. The trainer performs a preflight check and will stop with a detailed missing-label report if teacher files are incomplete.
+Expected throughput: ~70 seconds/epoch → ~2.3 hours for 120 epochs on a single A10/A100 GPU.
+
+The trainer performs a preflight check and will stop with a detailed missing-label report if teacher cache files are incomplete.
 
 ### Optional Weights & Biases logging
 
@@ -305,20 +308,21 @@ export WANDB_API_KEY=<your_wandb_api_key>
 wandb login
 ```
 
-Update config:
+Config (`configs/paper_dispef_m.yaml`):
 
 - `wandb.enabled: true`
 - `wandb.entity: xingyuhu95-carnegie-mellon-university`
 - `wandb.project: pLM_KD`
+- `wandb.name: baseline`
 - `train.log_every_steps: 100` (batch-level W&B updates)
 
-If W&B init fails (for example, missing API key), training now continues without W&B and logs a warning.
+If W&B init fails (for example, missing API key), training continues without W&B and logs a warning.
 
 ### Optional S3 autosync (checkpoints + logs)
 
 The trainer can upload run artifacts to S3 during training.
 
-Config (`configs/baseline_dispef_m.yaml`):
+Config (`configs/paper_dispef_m.yaml`):
 
 - `s3_sync.enabled: true`
 - `s3_sync.bucket_prefix: s3://02750s3/active-learning-plm-distillation`
@@ -331,8 +335,6 @@ Multiple experiments are isolated automatically under:
 
 - `s3://.../<run_dir_name>/checkpoints/<run_dir_name>/...`
 - `s3://.../<run_dir_name>/outputs/<run_dir_name>/...`
-
-This avoids collisions across concurrent or repeated experiments.
 
 Prerequisite: AWS credentials (instance role, `aws configure`, or SSO) must be available in the training shell.
 
@@ -375,7 +377,7 @@ tmux new -s distill_run
 source ~/miniforge3/etc/profile.d/conda.sh
 conda activate /opt/dlami/nvme/envs/esm3_gnn_distill
 cd /opt/dlami/nvme/esm3_gnn_distill_baseline
-python -m train.train --config configs/baseline_dispef_m.yaml --run-name dispef_m_geo_gnn
+python -m train.train --config configs/paper_dispef_m.yaml --run-name baseline
 # Detach: Ctrl+b then d
 ```
 
@@ -389,7 +391,10 @@ Alternative: `nohup`
 
 ```bash
 cd /opt/dlami/nvme/esm3_gnn_distill_baseline
-nohup bash -lc 'source ~/miniforge3/etc/profile.d/conda.sh && conda activate /opt/dlami/nvme/envs/esm3_gnn_distill && python -m train.train --config configs/baseline_dispef_m.yaml --run-name dispef_m_geo_gnn' > /opt/dlami/nvme/esm3_gnn_distill_baseline/logs/train_nohup.log 2>&1 &
+nohup /opt/dlami/nvme/envs/esm3_gnn_distill/bin/python -m train.train \
+  --config configs/paper_dispef_m.yaml \
+  --run-name baseline \
+  > logs/train_nohup.log 2>&1 &
 ```
 
 Watch progress:
@@ -405,7 +410,7 @@ source ~/miniforge3/etc/profile.d/conda.sh
 conda activate /opt/dlami/nvme/envs/esm3_gnn_distill
 
 python -m eval.evaluate \
-  --config /opt/dlami/nvme/esm3_gnn_distill_baseline/configs/baseline_dispef_m.yaml \
+  --config /opt/dlami/nvme/esm3_gnn_distill_baseline/configs/paper_dispef_m.yaml \
   --checkpoint /opt/dlami/nvme/esm3_gnn_distill_baseline/checkpoints/<RUN_DIR>/best.pt \
   --split test \
   --batch-size 16 \
@@ -418,12 +423,12 @@ Reported metrics:
 - teacher cross-entropy
 - teacher KL divergence
 - top-1 SS8 accuracy vs teacher argmax
-- optional DSSP accuracy (if DSSP labels were produced)
+- DSSP accuracy (hard labels from mdtraj)
 
-## Distillation Losses Implemented
+## Distillation Losses
 
-- hard-label CE: `cross_entropy(logits, class_index)`
 - soft-label CE: `-sum(p_teacher * log_softmax(student_logits))`
+- DSSP auxiliary CE: `cross_entropy(logits, dssp_class_index, ignore_index=-100)`
 - KL distillation: `KL(p_teacher || p_student)` with optional temperature
 
 Total:
@@ -436,26 +441,23 @@ Total:
 - teacher querying is isolated in `teacher/`
 - `SplitIndex` helper supports moving IDs between splits incrementally
 
-## What Matches the Paper vs Approximations
+## What the Paper Says vs This Implementation
 
-Closest matches:
-
-- DISPEF-only pipeline (targeting DISPEF-M)
-- backbone-only nodes (`N`, `CA`, `C`)
-- amino acid + atom identity node features
-- residue SS8 targets duplicated to the 3 backbone atoms
-- softmax SS8 head with distillation training objective
-- paper training schedule defaults (120 epochs, batch 50, Adam 1e-3, 0.9 decay every 3 epochs)
-
-Approximations / documented deviations:
-
-- student architecture is a compact PyG GNN baseline (`simple_gnn` or `geo_gnn`), not a full Schake reimplementation
-- graph construction uses simple distance-cutoff edges with optional neighbor cap
-- ESM3 wrapper is robust but may require minor API adaptation depending on installed ESM3 SDK version
-- optional DSSP path uses Biopython DSSP, while Schake reference code also uses MDTraj-based utilities
+| Aspect | Paper | This implementation |
+|---|---|---|
+| Dataset | DISPEF-M | DISPEF-M (`DISPEF_M_tr.pt` / `DISPEF_M_te.pt`) |
+| Coordinates | nm (all-atom MD) | nm extracted from `.pt` files |
+| Backbone atoms | N, CA, C | N, CA, C |
+| DSSP tool | mdtraj 1.10.1 | mdtraj 1.10.1 |
+| Student model | Schake v2 | Schake v2 (`models/vendor/schake_model_v2.py`) |
+| Radius graph | SAKE 0.25–1.0 nm + SchNet 1.0–2.5 nm | built internally by Schake |
+| Training split | train/test only (no val) | train/test only (`use_validation: false`) |
+| Epochs / batch | 120 / 50 | 120 / 50 |
+| Optimizer | Adam lr=1e-3 | Adam lr=1e-3 |
+| LR schedule | StepLR γ=0.9 every 3 epochs | StepLR γ=0.9 every 3 epochs |
+| Loss | teacher CE + DSSP CE | teacher CE + DSSP CE (`λ=1.0` each) |
 
 ## Reference
 
-- https://github.com/ZhangGroup-MITChemistry/Schake_GNN/
-
-This baseline intentionally stays limited to distillation-stage training/evaluation only.
+- Airas and Zhang (2026): https://arxiv.org/abs/2601.05388
+- Schake GNN source: https://github.com/ZhangGroup-MITChemistry/Schake_GNN/

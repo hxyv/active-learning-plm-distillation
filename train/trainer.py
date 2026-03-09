@@ -49,6 +49,8 @@ class Trainer:
         self.temperature = float(cfg["train"].get("distill_temperature", 1.0))
         self.lambda_teacher = float(cfg["train"].get("lambda_teacher", 1.0))
         self.lambda_dssp = float(cfg["train"].get("lambda_dssp", 0.0))
+        self.require_dssp_labels = bool(cfg["train"].get("require_dssp_labels", False))
+        self.use_validation = bool(cfg["train"].get("use_validation", True))
         self.log_every_steps = int(cfg["train"].get("log_every_steps", 100))
         self.global_step = 0
 
@@ -182,7 +184,11 @@ class Trainer:
 
         splits = json.loads(split_path.read_text())
         missing_report = {}
-        for split in ["train", "val", "test"]:
+        required_splits = ["train", "test"]
+        if self.use_validation:
+            required_splits.insert(1, "val")
+
+        for split in required_splits:
             ids = splits.get(split, [])
             missing = [sid for sid in ids if not (teacher_root / f"{sid}.npz").exists()]
             if missing:
@@ -233,8 +239,8 @@ class Trainer:
 
     def _build_loaders(self):
         train_ds = self._build_dataset("train")
-        val_ds = self._build_dataset("val")
         test_ds = self._build_dataset("test")
+        val_ds = self._build_dataset("val") if self.use_validation else None
 
         batch_size = int(self.cfg["train"].get("batch_size", 50))
         num_workers = int(self.cfg["train"].get("num_workers", 4))
@@ -242,7 +248,11 @@ class Trainer:
 
         if self.multi_gpu and torch.cuda.device_count() > 1 and self.device.type == "cuda":
             train_loader = DataListLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-            val_loader = DataListLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+            val_loader = (
+                DataListLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+                if val_ds is not None
+                else None
+            )
             test_loader = DataListLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
         else:
             train_loader = DataLoader(
@@ -252,12 +262,16 @@ class Trainer:
                 num_workers=num_workers,
                 pin_memory=pin_memory,
             )
-            val_loader = DataLoader(
-                val_ds,
-                batch_size=batch_size,
-                shuffle=False,
-                num_workers=num_workers,
-                pin_memory=pin_memory,
+            val_loader = (
+                DataLoader(
+                    val_ds,
+                    batch_size=batch_size,
+                    shuffle=False,
+                    num_workers=num_workers,
+                    pin_memory=pin_memory,
+                )
+                if val_ds is not None
+                else None
             )
             test_loader = DataLoader(
                 test_ds,
@@ -305,8 +319,16 @@ class Trainer:
             raise ValueError(f"Unsupported teacher_loss_type: {self.teacher_loss_type}")
 
         valid_dssp = dssp_idx >= 0
-        if self.lambda_dssp > 0 and valid_dssp.any():
-            dssp_loss = hard_cross_entropy(logits, dssp_idx, ignore_index=-100)
+        if self.lambda_dssp > 0:
+            if valid_dssp.any():
+                dssp_loss = hard_cross_entropy(logits, dssp_idx, ignore_index=-100)
+            else:
+                if self.require_dssp_labels:
+                    raise RuntimeError(
+                        "lambda_dssp > 0 but this batch has no valid DSSP labels (all are ignore_index). "
+                        "For paper-faithful training, regenerate processed data with usable DSSP labels."
+                    )
+                dssp_loss = torch.zeros((), device=logits.device)
         else:
             dssp_loss = torch.zeros((), device=logits.device)
 
@@ -478,7 +500,22 @@ class Trainer:
 
         for epoch in range(self.start_epoch, self.max_epochs + 1):
             train_metrics = self._epoch_loop(self.train_loader, train=True, epoch=epoch)
-            val_metrics = self._epoch_loop(self.val_loader, train=False, epoch=epoch)
+            if self.use_validation:
+                if self.val_loader is None:
+                    raise RuntimeError("use_validation=true but validation loader is missing.")
+                val_metrics = self._epoch_loop(self.val_loader, train=False, epoch=epoch)
+            else:
+                val_metrics = {
+                    "total_loss": float("nan"),
+                    "teacher_loss": float("nan"),
+                    "teacher_ce": float("nan"),
+                    "teacher_kl": float("nan"),
+                    "dssp_loss": float("nan"),
+                    "teacher_top1_acc": float("nan"),
+                    "dssp_acc": float("nan"),
+                    "n_nodes": 0.0,
+                    "n_dssp": 0.0,
+                }
             self.scheduler.step()
 
             row = {
@@ -513,14 +550,19 @@ class Trainer:
                 val_metrics["teacher_top1_acc"],
             )
 
-            val_key = val_metrics["total_loss"]
-            if val_key < self.best_val:
-                self.best_val = val_key
+            if self.use_validation:
+                val_key = val_metrics["total_loss"]
+                if val_key < self.best_val:
+                    self.best_val = val_key
+                    self.best_epoch = epoch
+                    self.no_improve_epochs = 0
+                    self._save_checkpoint(self.ckpt_dir / "best.pt", epoch=epoch, is_best=True)
+                else:
+                    self.no_improve_epochs += 1
+            else:
+                self.best_val = float("nan")
                 self.best_epoch = epoch
                 self.no_improve_epochs = 0
-                self._save_checkpoint(self.ckpt_dir / "best.pt", epoch=epoch, is_best=True)
-            else:
-                self.no_improve_epochs += 1
 
             self._save_checkpoint(self.ckpt_dir / "last.pt", epoch=epoch)
             if epoch % int(self.cfg["train"].get("checkpoint_every", 10)) == 0:
@@ -528,7 +570,7 @@ class Trainer:
 
             self._write_history(history)
 
-            if self.no_improve_epochs >= self.patience:
+            if self.use_validation and self.no_improve_epochs >= self.patience:
                 self.logger.info(
                     "Early stopping at epoch %d (best epoch=%d, best val total loss=%.6f)",
                     epoch,
@@ -539,7 +581,8 @@ class Trainer:
 
         self._plot_history(history)
 
-        best_ckpt = torch.load(self.ckpt_dir / "best.pt", map_location=self.primary_device)
+        ckpt_to_eval = self.ckpt_dir / ("best.pt" if self.use_validation else "last.pt")
+        best_ckpt = torch.load(ckpt_to_eval, map_location=self.primary_device)
         if hasattr(self.model, "module"):
             self.model.module.load_state_dict(best_ckpt["model_state"])
         else:

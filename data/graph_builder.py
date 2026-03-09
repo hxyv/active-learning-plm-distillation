@@ -41,7 +41,7 @@ def _build_edges(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Radius graph with optional per-node neighbor cap."""
     n = coords.shape[0]
-    if n == 0:
+    if n == 0 or max_neighbors == 0:
         return torch.empty((2, 0), dtype=torch.long), torch.empty((0, 4), dtype=torch.float32)
 
     dist = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)

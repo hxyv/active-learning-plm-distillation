@@ -180,9 +180,12 @@ def build_split_from_train_only(
     seed: int,
 ) -> Tuple[List[str], List[str]]:
     train_ids = sorted(set(train_ids))
+    if val_fraction <= 0:
+        return train_ids, []
     rng = random.Random(seed)
     rng.shuffle(train_ids)
     n_val = max(1, int(len(train_ids) * val_fraction))
+    n_val = min(n_val, len(train_ids))
     val_ids = sorted(train_ids[:n_val])
     train_ids = sorted(train_ids[n_val:])
     return train_ids, val_ids

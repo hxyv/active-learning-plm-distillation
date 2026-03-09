@@ -21,7 +21,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import numpy as np
 
 from data.constants import AA1_TO_INDEX, ATOM_TYPES, aa3_to_index
-from data.dssp import compute_dssp_labels
+from data.dssp import compute_dssp_from_bb4_coords, compute_dssp_labels
 from data.io_utils import (
     build_split_from_train_only,
     discover_split_ids,
@@ -444,19 +444,37 @@ def infer_aa_from_atom_block(atom_names: np.ndarray) -> str:
     return "X"
 
 
-def extract_bb3_from_pt_sample(
+def extract_bb4_from_pt_sample(
     coords: np.ndarray,
     atom_name_idx: np.ndarray,
     name_inv: Dict[int, str],
-) -> Tuple[np.ndarray, List[str], int]:
+) -> Tuple[np.ndarray, np.ndarray, List[str], int]:
+    """Extract backbone atoms from a DISPEF PT sample.
+
+    Returns:
+        bb3_coords: (L, 3, 3) float32 – [N, CA, C] per residue (model input).
+        bb4_coords: (L, 4, 3) float32 – [N, CA, C, O] per residue (for DSSP).
+        aa1_list:   list of L one-letter AA codes.
+        num_res:    L.
+
+    Residues missing N, CA, or C are dropped.  For residues missing O, the O
+    coordinate is set to the zero vector (DSSP will produce -100 for those).
+    """
     atom_names = np.asarray([name_inv.get(int(x), "UNK") for x in atom_name_idx.tolist()], dtype=object)
 
     ca_idx = np.where(atom_names == "CA")[0]
     if len(ca_idx) == 0:
-        return np.empty((0, 3, 3), dtype=np.float32), [], 0
+        return (
+            np.empty((0, 3, 3), dtype=np.float32),
+            np.empty((0, 4, 3), dtype=np.float32),
+            [],
+            0,
+        )
 
-    residues = []
+    bb3_residues: List[np.ndarray] = []
+    bb4_residues: List[np.ndarray] = []
     aa1_list: List[str] = []
+
     for i, ca in enumerate(ca_idx):
         st = 0 if i == 0 else int(ca_idx[i - 1] + 1)
         ed = int(len(atom_names)) if i == len(ca_idx) - 1 else int(ca_idx[i + 1])
@@ -474,14 +492,27 @@ def extract_bb3_from_pt_sample(
 
         n_abs = n_abs_candidates[-1]
         c_abs = c_abs_candidates[0]
-        residues.append(np.stack([coords[n_abs], coords[ca], coords[c_abs]], axis=0))
+
+        # Locate the carbonyl O: first "O" atom after C within the residue block.
+        o_rel = np.where(block_names == "O")[0]
+        o_abs_candidates = [st + int(x) for x in o_rel if st + int(x) > c_abs]
+        o_coord = coords[o_abs_candidates[0]] if o_abs_candidates else np.zeros(3, dtype=np.float32)
+
+        bb3_residues.append(np.stack([coords[n_abs], coords[ca], coords[c_abs]], axis=0))
+        bb4_residues.append(np.stack([coords[n_abs], coords[ca], coords[c_abs], o_coord], axis=0))
         aa1_list.append(infer_aa_from_atom_block(block_names))
 
-    if not residues:
-        return np.empty((0, 3, 3), dtype=np.float32), [], 0
+    if not bb3_residues:
+        return (
+            np.empty((0, 3, 3), dtype=np.float32),
+            np.empty((0, 4, 3), dtype=np.float32),
+            [],
+            0,
+        )
 
-    arr = np.asarray(residues, dtype=np.float32)
-    return arr, aa1_list, int(arr.shape[0])
+    bb3 = np.asarray(bb3_residues, dtype=np.float32)
+    bb4 = np.asarray(bb4_residues, dtype=np.float32)
+    return bb3, bb4, aa1_list, int(bb3.shape[0])
 
 
 def preprocess_pt_mode(args: argparse.Namespace, dataset_root: Path) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
@@ -533,7 +564,9 @@ def preprocess_pt_mode(args: argparse.Namespace, dataset_root: Path) -> Tuple[Li
             coords = np.asarray(coords_t, dtype=np.float32)
             atom_name_idx = np.asarray(atom_name_t, dtype=np.int64)
 
-            bb3_coords, aa1_inferred, num_res = extract_bb3_from_pt_sample(coords, atom_name_idx, name_inv)
+            bb3_coords, bb4_coords, aa1_inferred, num_res = extract_bb4_from_pt_sample(
+                coords, atom_name_idx, name_inv
+            )
             if num_res < args.min_residues:
                 continue
 
@@ -555,7 +588,8 @@ def preprocess_pt_mode(args: argparse.Namespace, dataset_root: Path) -> Tuple[Li
             aa_idx = np.asarray([AA1_TO_INDEX.get(ch, AA1_TO_INDEX["X"]) for ch in final_seq], dtype=np.int64)
             seq_chars = np.asarray(list(final_seq), dtype="U1")
 
-            dssp_idx = np.full((num_res,), fill_value=-100, dtype=np.int64)
+            # Compute 8-class DSSP from backbone N, CA, C, O coordinates.
+            dssp_idx = compute_dssp_from_bb4_coords(bb4_coords, list(final_seq))
 
             sample = {
                 "sample_id": sample_id,
@@ -586,13 +620,16 @@ def preprocess_pt_mode(args: argparse.Namespace, dataset_root: Path) -> Tuple[Li
     train_ids = sorted(set(train_ids))
     test_ids = sorted(set(test_ids))
     train_ids, val_ids = build_split_from_train_only(train_ids, args.val_fraction, args.seed)
+    split_source = "pt_files_official_train_test"
+    if val_ids:
+        split_source = "pt_files_train_test_plus_val_from_train"
 
     splits = {
         "train": train_ids,
         "val": val_ids,
         "test": test_ids,
         "pool_unassigned": [],
-        "split_source": "pt_files_train_test_plus_val_from_train",
+        "split_source": split_source,
     }
 
     seq_cache_path.write_text(json.dumps(seq_cache, indent=2))
