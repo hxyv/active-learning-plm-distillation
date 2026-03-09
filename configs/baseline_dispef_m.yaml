@@ -48,6 +48,7 @@ train:
 
   early_stopping_patience: 20
   checkpoint_every: 10
+  log_every_steps: 100
   resume_checkpoint: ""
 
 wandb:
@@ -57,6 +58,16 @@ wandb:
   name: ""
   notes: ""
   tags: []
+
+s3_sync:
+  enabled: false
+  bucket_prefix: "s3://02750s3/active-learning-plm-distillation"
+  sync_every_epochs: 1
+  upload_last_each_epoch: true
+  upload_best: true
+  upload_epoch_checkpoints: false
+  upload_run_artifacts: true
+  fail_on_error: false
 
 eval:
   batch_size: 16

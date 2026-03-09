@@ -279,8 +279,31 @@ Update config:
 - `wandb.enabled: true`
 - `wandb.entity: xingyuhu95-carnegie-mellon-university`
 - `wandb.project: pLM_KD`
+- `train.log_every_steps: 100` (batch-level W&B updates)
 
 If W&B init fails (for example, missing API key), training now continues without W&B and logs a warning.
+
+### Optional S3 autosync (checkpoints + logs)
+
+The trainer can upload run artifacts to S3 during training.
+
+Config (`configs/baseline_dispef_m.yaml`):
+
+- `s3_sync.enabled: true`
+- `s3_sync.bucket_prefix: s3://02750s3/active-learning-plm-distillation`
+- `s3_sync.upload_last_each_epoch: true` (uploads `last.pt` every epoch)
+- `s3_sync.upload_best: true`
+- `s3_sync.upload_epoch_checkpoints: false` (optional)
+- `s3_sync.upload_run_artifacts: true` (uploads `train.log` / `history.csv`)
+
+Multiple experiments are isolated automatically under:
+
+- `s3://.../<run_dir_name>/checkpoints/<run_dir_name>/...`
+- `s3://.../<run_dir_name>/outputs/<run_dir_name>/...`
+
+This avoids collisions across concurrent or repeated experiments.
+
+Prerequisite: AWS credentials (instance role, `aws configure`, or SSO) must be available in the training shell.
 
 ### Run in background (survives SSH disconnect)
 
