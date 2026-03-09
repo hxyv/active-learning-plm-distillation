@@ -144,10 +144,34 @@ class ESM3Teacher(TeacherBase):
             "Update teacher/esm3_teacher.py for your SDK response shape."
         )
 
-    def _call_logits(self, sequence: str):
+    def _call_logits(self, sequence: str, backbone_coords_ang: Optional[np.ndarray] = None):
+        """Call ESM3 to get secondary-structure logits.
+
+        Args:
+            sequence: amino acid sequence string.
+            backbone_coords_ang: optional (L, 3, 3) float32 array of N/CA/C coordinates
+                in Angstroms. When provided, ESM3 conditions its SS8 predictions on the
+                structure, making teacher labels consistent with mdtraj DSSP from the
+                same coordinates (paper-faithful setup).
+        """
         from esm.sdk.api import ESMProtein, ESMProteinError, LogitsConfig  # type: ignore
 
-        protein = ESMProtein(sequence=sequence)
+        if backbone_coords_ang is not None:
+            try:
+                from esm.utils.structure.protein_chain import ProteinChain  # type: ignore
+                chain = ProteinChain.from_backbone_atom_coordinates(
+                    backbone_coords_ang, sequence=sequence
+                )
+                protein = ESMProtein.from_protein_chain(chain)
+            except Exception as exc:
+                logger.warning(
+                    "Could not build structure-conditioned ESMProtein (%s); "
+                    "falling back to sequence-only.", exc
+                )
+                protein = ESMProtein(sequence=sequence)
+        else:
+            protein = ESMProtein(sequence=sequence)
+
         encoded = self._model.encode(protein)
         if isinstance(encoded, ESMProteinError):
             raise RuntimeError(f"ESM3 encode failed: {encoded.error_code} {encoded.error_msg}")
@@ -208,12 +232,17 @@ class ESM3Teacher(TeacherBase):
             "(expected 8 or 11)."
         )
 
-    def predict_ss8_probs(self, sequence: str, sample_id: Optional[str] = None) -> np.ndarray:
+    def predict_ss8_probs(
+        self,
+        sequence: str,
+        sample_id: Optional[str] = None,
+        backbone_coords_ang: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         if self._api_kind is None:
             raise RuntimeError("No active ESM3 backend")
 
         with torch.no_grad():
-            output = self._call_logits(sequence)
+            output = self._call_logits(sequence, backbone_coords_ang=backbone_coords_ang)
             logits = self._extract_secondary_structure_logits(output)
 
             if logits.ndim == 3:

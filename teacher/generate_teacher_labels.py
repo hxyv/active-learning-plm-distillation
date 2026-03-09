@@ -174,7 +174,20 @@ def main() -> None:
                 continue
 
         try:
-            residue_probs = teacher.predict_ss8_probs(seq, sample_id=sid)
+            # Load backbone coords (nm) and convert to Angstrom for structure-conditioned ESM3.
+            # This makes teacher SS8 predictions consistent with mdtraj DSSP labels
+            # computed from the same DISPEF-M simulation coordinates (paper-faithful setup).
+            backbone_coords_ang = None
+            try:
+                sample_data = np.load(sample_path, allow_pickle=True)
+                if "coords" in sample_data:
+                    backbone_coords_ang = sample_data["coords"].astype(np.float32) * 10.0  # nm -> Ang
+            except Exception as exc:
+                logger.debug("Could not load backbone coords for %s (%s); using sequence-only.", sid, exc)
+
+            residue_probs = teacher.predict_ss8_probs(
+                seq, sample_id=sid, backbone_coords_ang=backbone_coords_ang
+            )
             residue_probs = residue_probs.astype(np.float32)
             residue_probs = residue_probs / np.clip(residue_probs.sum(axis=-1, keepdims=True), 1e-8, None)
             if residue_probs.shape != (len(seq), 8):
