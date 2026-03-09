@@ -96,6 +96,37 @@ Single-command alternative:
 bash /opt/dlami/nvme/esm3_gnn_distill_baseline/scripts/setup_env_nvme.sh
 ```
 
+## Startup API Checklist
+
+Set credentials in every new shell (or load them from a local, untracked env file).
+
+```bash
+# Weights & Biases (training monitoring)
+export WANDB_API_KEY=<your_wandb_api_key>
+
+# Hugging Face (required for local ESM3 gated model access)
+export HF_HOME=/opt/dlami/nvme/esm3_gnn_distill_baseline/cache/huggingface
+export HUGGINGFACE_HUB_CACHE=$HF_HOME/hub
+export TRANSFORMERS_CACHE=$HF_HOME/transformers
+# optional explicit token:
+# export HUGGINGFACE_HUB_TOKEN=<your_hf_token>
+
+# EvolutionaryScale Forge API (only if using --esm-backend forge)
+# export ESM_API_TOKEN=<your_forge_token>
+
+# AWS/S3 (required if s3_sync.enabled=true or manual aws s3 sync)
+# Prefer instance role. If not using instance role, export:
+# export AWS_ACCESS_KEY_ID=<...>
+# export AWS_SECRET_ACCESS_KEY=<...>
+# export AWS_SESSION_TOKEN=<...>   # if temporary credentials
+# export AWS_DEFAULT_REGION=us-east-1
+```
+
+Notes:
+
+- Keep tokens out of git. Do not commit them to configs or scripts.
+- For HF login flow, run `huggingface-cli login` once in the active environment.
+
 ## 2) Download and Unpack DISPEF
 
 ```bash
@@ -304,6 +335,36 @@ Multiple experiments are isolated automatically under:
 This avoids collisions across concurrent or repeated experiments.
 
 Prerequisite: AWS credentials (instance role, `aws configure`, or SSO) must be available in the training shell.
+
+### Instance stop/start recovery notes
+
+If your NVMe data is ephemeral, do this before stopping the instance:
+
+1. Push code changes to GitHub.
+2. Sync critical artifacts to S3:
+   - `checkpoints/`
+   - `outputs/`
+   - `cache/teacher/`
+   - `data/processed/`
+3. Optionally skip `data/raw/` if you can re-download DISPEF.
+
+Example:
+
+```bash
+export BUCKET_PREFIX="s3://02750s3/active-learning-plm-distillation/$(date -u +%Y%m%d_%H%M%S)"
+cd /opt/dlami/nvme/esm3_gnn_distill_baseline
+aws s3 sync checkpoints "${BUCKET_PREFIX}/checkpoints/"
+aws s3 sync outputs "${BUCKET_PREFIX}/outputs/"
+aws s3 sync cache/teacher "${BUCKET_PREFIX}/teacher_cache/"
+aws s3 sync data/processed "${BUCKET_PREFIX}/data_processed/"
+```
+
+After starting a new instance:
+
+1. Clone/pull repo.
+2. Recreate/activate conda env.
+3. Restore artifacts from S3.
+4. Resume training from `checkpoints/<RUN_DIR>/last.pt` if needed.
 
 ### Run in background (survives SSH disconnect)
 
