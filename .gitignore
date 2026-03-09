@@ -1,0 +1,33 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.log
+*.tmp
+
+.env
+.venv
+.python-version
+
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# Local data and outputs
+data/raw/
+data/processed/
+cache/
+checkpoints/
+outputs/
+logs/
+wandb/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/

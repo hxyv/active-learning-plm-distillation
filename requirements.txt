@@ -1,0 +1,22 @@
+# Core numerical stack
+numpy
+scipy
+pandas
+scikit-learn
+matplotlib
+pyyaml
+tqdm
+requests
+
+# Protein parsing and DSSP access
+biopython
+
+# Deep learning stack (install torch + PyG with CUDA wheels separately)
+torch
+torch-geometric
+
+# ESM3 teacher wrapper
+esm
+
+# Experiment tracking
+wandb

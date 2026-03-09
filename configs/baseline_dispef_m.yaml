@@ -1,0 +1,62 @@
+paths:
+  project_root: /opt/dlami/nvme/esm3_gnn_distill_baseline
+  raw_dispef_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/data/raw/dispef
+  processed_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/data/processed
+  teacher_cache_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/cache/teacher
+  outputs_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/outputs
+  checkpoints_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/checkpoints
+  logs_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/logs
+
+data:
+  dataset_name: dispef_m
+  cache_graphs: false
+
+graph:
+  cutoff: 8.0
+  max_neighbors: 64
+
+model:
+  name: geo_gnn   # simple_gnn | geo_gnn
+  aa_vocab_size: 21
+  atom_vocab_size: 3
+  aa_emb_dim: 32
+  atom_emb_dim: 8
+  hidden_dim: 128
+  num_layers: 4
+  dropout: 0.1
+  out_dim: 8
+  edge_dim: 4
+
+train:
+  seed: 42
+  device: auto
+  epochs: 120
+  batch_size: 50
+  num_workers: 6
+  mixed_precision: true
+  multi_gpu: false
+
+  lr: 1.0e-3
+  weight_decay: 1.0e-6
+  lr_step_size: 3
+  lr_gamma: 0.9
+
+  teacher_loss_type: soft_ce   # soft_ce | kl
+  distill_temperature: 1.0
+  lambda_teacher: 1.0
+  lambda_dssp: 0.0
+
+  early_stopping_patience: 20
+  checkpoint_every: 10
+  resume_checkpoint: ""
+
+wandb:
+  enabled: true
+  entity: "xingyuhu95-carnegie-mellon-university"
+  project: "pLM_KD"
+  name: ""
+  notes: ""
+  tags: []
+
+eval:
+  batch_size: 16

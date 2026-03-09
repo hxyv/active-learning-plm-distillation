@@ -1,0 +1,21 @@
+name: esm3_gnn_distill
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - scikit-learn
+  - matplotlib
+  - pyyaml
+  - tqdm
+  - biopython
+  - dssp
+  - requests
+  - jupyter
+  - pip:
+      - tensorboard
+      - esm
+      - wandb
