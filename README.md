@@ -441,22 +441,6 @@ Total:
 - teacher querying is isolated in `teacher/`
 - `SplitIndex` helper supports moving IDs between splits incrementally
 
-## What the Paper Says vs This Implementation
-
-| Aspect | Paper | This implementation |
-|---|---|---|
-| Dataset | DISPEF-M | DISPEF-M (`DISPEF_M_tr.pt` / `DISPEF_M_te.pt`) |
-| Coordinates | nm (all-atom MD) | nm extracted from `.pt` files |
-| Backbone atoms | N, CA, C | N, CA, C |
-| DSSP tool | mdtraj 1.10.1 | mdtraj 1.10.1 |
-| Student model | Schake v2 | Schake v2 (`models/vendor/schake_model_v2.py`) |
-| Radius graph | SAKE 0.25–1.0 nm + SchNet 1.0–2.5 nm | built internally by Schake |
-| Training split | train/test only (no val) | train/test only (`use_validation: false`) |
-| Epochs / batch | 120 / 50 | 120 / 50 |
-| Optimizer | Adam lr=1e-3 | Adam lr=1e-3 |
-| LR schedule | StepLR γ=0.9 every 3 epochs | StepLR γ=0.9 every 3 epochs |
-| Loss | teacher CE + DSSP CE | teacher CE + DSSP CE (`λ=1.0` each) |
-
 ## Reference
 
 - Airas and Zhang (2026): https://arxiv.org/abs/2601.05388
