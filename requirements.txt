@@ -8,12 +8,17 @@ pyyaml
 tqdm
 requests
 
-# Protein parsing and DSSP access
+# Protein parsing and DSSP
 biopython
+mdtraj==1.10.1
 
-# Deep learning stack (install torch + PyG with CUDA wheels separately)
+# Deep learning stack (install torch + PyG extensions with CUDA wheels separately)
+# pip install torch --index-url https://download.pytorch.org/whl/cu128
+# pip install torch-scatter torch-cluster -f https://data.pyg.org/whl/torch-2.10.0+cu128.html
 torch
 torch-geometric
+torch-scatter
+torch-cluster
 
 # ESM3 teacher wrapper
 esm
