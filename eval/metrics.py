@@ -18,14 +18,22 @@ def compute_teacher_metrics(
         ce = soft_target_cross_entropy(logits, teacher_probs, reduction="mean").item()
         kl = teacher_kl_divergence(logits, teacher_probs, reduction="batchmean").item()
 
+        student_probs = torch.softmax(logits, dim=-1)
         student_argmax = logits.argmax(dim=-1)
         teacher_argmax = teacher_probs.argmax(dim=-1)
         acc_teacher = (student_argmax == teacher_argmax).float().mean().item()
+
+        # Average correct-motif probability: mean student softmax probability
+        # assigned to the teacher's top-1 SS8 class.
+        correct_motif_prob = student_probs.gather(
+            dim=-1, index=teacher_argmax.unsqueeze(-1)
+        ).squeeze(-1).mean().item()
 
         out = {
             "teacher_ce": ce,
             "teacher_kl": kl,
             "teacher_top1_acc": acc_teacher,
+            "correct_motif_prob": correct_motif_prob,
         }
 
         if dssp_idx is not None:

@@ -58,7 +58,7 @@ def compute_dssp_from_bb4_coords(
 ) -> np.ndarray:
     """Compute 8-class DSSP labels from backbone N, CA, C, O coordinates.
 
-    Uses mdtraj (version 1.10.1, as in the paper) with backbone-only topology.
+    Uses mdtraj (version 1.10.1) with backbone-only topology.
     Coordinates must be in **nanometers** (mdtraj native unit).
 
     Args:

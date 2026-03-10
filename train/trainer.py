@@ -326,7 +326,7 @@ class Trainer:
                 if self.require_dssp_labels:
                     raise RuntimeError(
                         "lambda_dssp > 0 but this batch has no valid DSSP labels (all are ignore_index). "
-                        "For paper-faithful training, regenerate processed data with usable DSSP labels."
+                        "Regenerate processed data with usable DSSP labels to enable the auxiliary loss."
                     )
                 dssp_loss = torch.zeros((), device=logits.device)
         else:

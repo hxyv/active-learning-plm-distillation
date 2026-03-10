@@ -58,7 +58,7 @@ AA1_TO_INDEX = {
 
 INDEX_TO_AA1 = {v: k for k, v in AA1_TO_INDEX.items()}
 
-# Paper baseline uses backbone atoms N, CA, C.
+# Backbone atoms used as GNN input.
 ATOM_TYPES = ["N", "CA", "C"]
 ATOM_TYPE_TO_INDEX = {atom: idx for idx, atom in enumerate(ATOM_TYPES)}
 

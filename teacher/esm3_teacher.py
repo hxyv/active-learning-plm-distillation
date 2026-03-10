@@ -151,8 +151,7 @@ class ESM3Teacher(TeacherBase):
             sequence: amino acid sequence string.
             backbone_coords_ang: optional (L, 3, 3) float32 array of N/CA/C coordinates
                 in Angstroms. When provided, ESM3 conditions its SS8 predictions on the
-                structure, making teacher labels consistent with mdtraj DSSP from the
-                same coordinates (paper-faithful setup).
+                structure in addition to the sequence.
         """
         from esm.sdk.api import ESMProtein, ESMProteinError, LogitsConfig  # type: ignore
 

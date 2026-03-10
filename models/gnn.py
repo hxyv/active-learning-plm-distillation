@@ -125,14 +125,11 @@ class GeoDistillGNN(nn.Module):
 
 class DualRangeDistillGNN(nn.Module):
     """
-    Paper-aligned approximation:
+    Dual-range GNN for SS8 distillation:
     - residue embedding + backbone-atom embedding (16 + 16 by default)
     - two message passing blocks
     - short-range all-atom branch and long-range CA-only branch
     - three-layer output MLP producing 8 SS8 logits
-
-    This is not a full SAKE+SchNet reimplementation, but the settings and
-    data flow match the paper protocol more closely than generic baselines.
     """
 
     def __init__(
