@@ -8,7 +8,7 @@ Implemented scope:
 
 - `sequence + structure -> teacher ESM3 SS8 probabilities -> student GNN`
 - student (Schake v2) trained on soft teacher targets plus DSSP auxiliary CE loss
-- paper-faithful training: 120 epochs, batch 50, Adam lr=1e-3, StepLR(γ=0.9, step=3), no validation split
+- paper-faithful training: 120 epochs, batch 50, Adam lr=1e-3, StepLR(γ=0.9, step=3), validation split enabled (patience=20)
 
 Not implemented:
 
@@ -153,7 +153,7 @@ This step:
 - extracts `N`, `CA`, `C`, `O` backbone coordinates (in nanometers)
 - computes 8-class DSSP labels from backbone coordinates using mdtraj (version 1.10.1), matching the paper
 - stores residue identity + atom identity + coordinates + DSSP labels per protein as NPZ
-- applies official train/test split; no validation holdout (paper protocol)
+- applies official train/test split; 10% of training proteins held out as validation
 
 ```bash
 source ~/miniforge3/etc/profile.d/conda.sh
@@ -271,7 +271,7 @@ python -m teacher.generate_teacher_labels \
 Training uses the Schake v2 architecture with the paper protocol:
 
 - Schake v2 (`model.name: schake`, `hidden_channels=32`, `num_layers=2`)
-- official DISPEF-M train/test split; no validation holdout
+- official DISPEF-M train/test split; validation holdout enabled (10% of train, early stopping patience=20)
 - 120 epochs, batch 50, Adam lr=1e-3, StepLR(γ=0.9, step=3), weight decay 1e-6
 - loss: teacher soft-CE + DSSP auxiliary CE (`lambda_teacher=1.0`, `lambda_dssp=1.0`)
 - Schake builds its own radius graph internally (SAKE: 0.25–1.0 nm, SchNet: 1.0–2.5 nm)

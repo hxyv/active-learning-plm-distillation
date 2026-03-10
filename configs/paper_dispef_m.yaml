@@ -52,7 +52,7 @@ train:
   require_dssp_labels: true
 
   # Paper uses official train/test only for DISPEF-M.
-  use_validation: false
+  use_validation: true
   early_stopping_patience: 20
   checkpoint_every: 10
   log_every_steps: 100
@@ -67,9 +67,9 @@ wandb:
   tags: ["paper"]
 
 s3_sync:
-  enabled: false
+  enabled: true
   bucket_prefix: "s3://02750s3/active-learning-plm-distillation"
-  sync_every_epochs: 1
+  sync_every_epochs: 10
   upload_last_each_epoch: true
   upload_best: true
   upload_epoch_checkpoints: false

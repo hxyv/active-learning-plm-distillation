@@ -6,7 +6,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from tqdm import tqdm
@@ -107,6 +107,19 @@ def load_sequence(sample_path: Path) -> Tuple[str, str]:
     return "X" * int(len(aa_idx)), file_base
 
 
+def load_backbone_coords_ang(sample_path: Path) -> Optional[np.ndarray]:
+    """Load backbone N/CA/C coordinates in Angstroms from a processed protein NPZ.
+
+    Returns an (L, 3, 3) float32 array or None if coordinates are unavailable.
+    The processed NPZ stores coordinates in nanometers; they are converted here.
+    """
+    with np.load(sample_path, allow_pickle=True) as arr:
+        if "coords" not in arr:
+            return None
+        coords_nm = arr["coords"].astype(np.float32)  # (L, 3, 3) in nm
+    return coords_nm * 10.0  # nm → Å
+
+
 def main() -> None:
     args = parse_args()
     setup_logging()
@@ -173,9 +186,11 @@ def main() -> None:
                 failures.append((sid, f"sequence_fetch_failed: {exc}"))
                 continue
 
+        backbone_coords_ang = load_backbone_coords_ang(sample_path)
+
         try:
             residue_probs = teacher.predict_ss8_probs(
-                seq, sample_id=sid, backbone_coords_ang=None
+                seq, sample_id=sid, backbone_coords_ang=backbone_coords_ang
             )
             residue_probs = residue_probs.astype(np.float32)
             residue_probs = residue_probs / np.clip(residue_probs.sum(axis=-1, keepdims=True), 1e-8, None)
