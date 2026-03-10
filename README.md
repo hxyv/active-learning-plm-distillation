@@ -189,6 +189,8 @@ Each cached file contains:
 - `teacher_probs_residue`: `[L, 8]`
 - `teacher_probs_node`: `[3L, 8]` (residue targets duplicated to `N/CA/C`)
 
+ESM3 is run with the DISPEF-M backbone coordinates as structure input (in addition to sequence), so its SS8 predictions are conditioned on the same conformations used to compute mdtraj DSSP labels. This keeps the two training signals consistent and avoids gradient conflict during distillation.
+
 Run:
 
 ```bash
@@ -200,10 +202,12 @@ python -m teacher.generate_teacher_labels \
   --dataset-name dispef_m \
   --teacher-cache-root /opt/dlami/nvme/esm3_gnn_distill_baseline/cache/teacher \
   --provider esm3 \
-  --esm-backend auto \
+  --esm-backend local \
   --split all \
   --device cuda
 ```
+
+To regenerate existing labels with structure conditioning, add `--overwrite`.
 
 Optional:
 
@@ -440,6 +444,7 @@ Total:
 - splits are explicit in `splits.json`: `train`, `val`, `test`, `pool_unassigned`
 - teacher querying is isolated in `teacher/`
 - `SplitIndex` helper supports moving IDs between splits incrementally
+
 
 ## Reference
 

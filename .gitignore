@@ -1,3 +1,4 @@
+models.vendor.schake_model_v2_CFConv_propagate_*.py
 __pycache__/
 *.pyc
 *.pyo
