@@ -1,12 +1,14 @@
-# ESM3 -> GNN Distillation Baseline (DISPEF-M)
+# ESM3 → GNN Distillation Baseline (DISPEF-M) — Colab Demo
 
 Reproduction of the distillation stage from:
 
 - Airas and Zhang (2026), *Knowledge Distillation of a Protein Language Model Yields a Foundational Implicit Solvent Model*
 
+This branch (`colab-dev`) adapts the baseline for **Google Colab** exploration using a DISPEF-M subset, without requiring AWS or ESM3.  The full production pipeline lives on the `main` branch.
+
 Implemented scope:
 
-- `sequence + structure -> teacher ESM3 SS8 probabilities -> student GNN`
+- `sequence + structure → teacher ESM3 SS8 probabilities → student GNN`
 - student (Schake v2) trained on soft teacher targets plus DSSP auxiliary CE loss
 - paper-faithful training: 120 epochs, batch 50, Adam lr=1e-3, StepLR(γ=0.9, step=3), validation split enabled (patience=20)
 
@@ -15,436 +17,254 @@ Not implemented:
 - probability-to-energy conversion
 - OpenMM / ML-MD / umbrella sampling / simulation workflows
 
+## Quick Start (Colab)
+
+Open `colab_demo.ipynb` in Google Colab (Runtime → T4 GPU) and run top to bottom.  The notebook covers:
+
+1. Dependency installation
+2. Download DISPEF-M from Zenodo (record 13755810, M subset only)
+3. Preprocess a configurable subset (`SUBSET = 200` proteins by default)
+4. Explore data structure — residue NPZ arrays, PyG graph object, Cα backbone visualisation
+5. Explore model architecture — Schake v2 dual-range GNN, parameter count, forward pass
+6. Loss functions — soft CE, KL-div, DSSP hard CE
+7. Generate mock teacher labels (DSSP-based, no ESM3 needed)
+8. Train the student GNN (10 epochs)
+9. Evaluate and visualise results
+
 ## Project Layout
 
 ```text
-/opt/dlami/nvme/esm3_gnn_distill_baseline
-├── cache/
-├── checkpoints/
+active-learning-plm-distillation/
+├── colab_demo.ipynb              ← Colab notebook (start here)
 ├── configs/
-│   └── paper_dispef_m.yaml
+│   ├── colab_demo.yaml           ← Colab config (no S3/W&B, /content/ paths, 10 epochs)
+│   └── paper_dispef_m.yaml       ← Full paper config (AWS, 120 epochs)
 ├── data/
-│   ├── __init__.py
-│   ├── constants.py
-│   ├── dssp.py
-│   ├── graph_builder.py
+│   ├── constants.py              ← AA / atom / SS8 vocabularies
+│   ├── dssp.py                   ← DSSP label computation via mdtraj
+│   ├── graph_builder.py          ← Residue NPZ → PyG Data (3L nodes)
 │   ├── io_utils.py
-│   ├── preprocess_dispef.py
-│   └── pyg_dataset.py
-├── envs/
-│   └── environment.yml
-├── eval/
-│   ├── __init__.py
-│   ├── evaluate.py
-│   └── metrics.py
-├── logs/
+│   ├── preprocess_dispef.py      ← PT tensors → per-protein NPZ + splits.json
+│   └── pyg_dataset.py            ← DistillationGraphDataset + SplitIndex
 ├── models/
-│   ├── __init__.py
 │   ├── factory.py
-│   ├── gnn.py
+│   ├── gnn.py                    ← SimpleDistillGNN, GeoDistillGNN, SchakeDistillModel
 │   └── vendor/
-│       └── schake_model_v2.py
-├── outputs/
+│       └── schake_model_v2.py    ← Official Schake v2 implementation
 ├── scripts/
+│   ├── generate_mock_teacher.py  ← DSSP → mock teacher cache (Colab use)
 │   ├── download_dispef.sh
-│   ├── eval_baseline.sh
 │   ├── generate_teacher_labels.sh
 │   ├── preprocess_dispef_m.sh
-│   ├── setup_env_nvme.sh
-│   └── train_baseline.sh
+│   ├── train_baseline.sh
+│   └── eval_baseline.sh
 ├── teacher/
-│   ├── __init__.py
-│   ├── base.py
 │   ├── esm3_teacher.py
 │   ├── generate_teacher_labels.py
 │   └── label_cache.py
 ├── train/
-│   ├── __init__.py
-│   ├── config_utils.py
-│   ├── losses.py
+│   ├── losses.py                 ← soft_ce, kl_div, hard_ce
 │   ├── train.py
-│   ├── trainer.py
-│   └── utils.py
-└── requirements.txt
+│   └── trainer.py
+└── eval/
+    ├── evaluate.py
+    └── metrics.py
 ```
 
-## Storage Locations (all under `/opt/dlami/nvme`)
+## Data Structure
 
-- project: `/opt/dlami/nvme/esm3_gnn_distill_baseline`
-- conda env prefix: `/opt/dlami/nvme/envs/esm3_gnn_distill`
-- raw DISPEF: `/opt/dlami/nvme/esm3_gnn_distill_baseline/data/raw/dispef`
-- processed DISPEF-M: `/opt/dlami/nvme/esm3_gnn_distill_baseline/data/processed/dispef_m`
-- teacher cache: `/opt/dlami/nvme/esm3_gnn_distill_baseline/cache/teacher/dispef_m`
-- checkpoints: `/opt/dlami/nvme/esm3_gnn_distill_baseline/checkpoints`
-- run outputs: `/opt/dlami/nvme/esm3_gnn_distill_baseline/outputs`
+### Residue-level NPZ (output of preprocessing)
 
-## 1) Environment Setup (Miniforge at `~/miniforge3`)
+Each protein is saved as `proteins/<sample_id>.npz`:
 
-```bash
-source ~/miniforge3/etc/profile.d/conda.sh
+| Array | Shape | Notes |
+|-------|-------|-------|
+| `aa_idx` | `[L]` | Residue AA index 0–20 (20 standard AAs + X=unknown) |
+| `coords` | `[L, 3, 3]` | Backbone N/CA/C coordinates in **nm** |
+| `dssp_idx` | `[L]` | SS8 class 0–7: G H I T E B S C  (−100 = missing) |
+| `sequence` | `[L]` | One-letter AA characters |
 
-conda env remove -p /opt/dlami/nvme/envs/esm3_gnn_distill -y || true
-conda env create -p /opt/dlami/nvme/envs/esm3_gnn_distill -f /opt/dlami/nvme/esm3_gnn_distill_baseline/envs/environment.yml
-conda activate /opt/dlami/nvme/envs/esm3_gnn_distill
+### Graph Data object (input to GNN)
 
-pip install --upgrade pip
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-pip install torch-scatter torch-cluster -f https://data.pyg.org/whl/torch-2.10.0+cu128.html
-pip install torch-geometric
-pip install mdtraj==1.10.1
+`graph_builder.py` expands residue arrays to **per-node** arrays by repeating each residue 3× (one entry per backbone atom N, CA, C).  A protein with **L** residues becomes a graph with **3L nodes**.
+
+| Tensor | Shape | Notes |
+|--------|-------|-------|
+| `pos` | `[3L, 3]` | Coordinates in nm, zero-centred |
+| `aa_idx` | `[3L]` | Residue AA index, repeated 3× |
+| `atom_idx` | `[3L]` | Atom type 0=N 1=CA 2=C, tiled per residue |
+| `dssp_idx` | `[3L]` | SS8 label, repeated 3× |
+| `node_to_residue` | `[3L]` | Maps node index → residue index |
+| `teacher_probs` | `[3L, 8]` | Soft SS8 distribution from ESM3 (if cached) |
+
+`edge_index` / `edge_attr` are empty when `cutoff=0.001` — Schake v2 builds its own radius graphs internally each forward pass.
+
+## Model Architecture — Schake v2
+
+```
+Input: pos [3L,3]  aa_idx [3L]  atom_idx [3L]
+          │
+  Index remapping → Schake vocab
+          │
+  Dual-range radius graphs (built on-the-fly):
+    SAKE branch  :  all atoms,  0.25 – 1.0 nm  (local / covalent geometry)
+    SchNet branch:  CA only,    1.0  – 2.5 nm  (inter-residue contacts)
+          │
+  2 × (SAKE layer + SchNet layer + LayerNorm)
+          │
+  3-layer MLP output head → 8 SS8 logits per node
 ```
 
-Single-command alternative:
-
-```bash
-bash /opt/dlami/nvme/esm3_gnn_distill_baseline/scripts/setup_env_nvme.sh
-```
-
-## Startup API Checklist
-
-Set credentials in every new shell (or load them from a local, untracked env file).
-
-```bash
-# Weights & Biases (training monitoring)
-export WANDB_API_KEY=<your_wandb_api_key>
-
-# Hugging Face (required for local ESM3 gated model access)
-export HF_HOME=/opt/dlami/nvme/esm3_gnn_distill_baseline/cache/huggingface
-export HUGGINGFACE_HUB_CACHE=$HF_HOME/hub
-export TRANSFORMERS_CACHE=$HF_HOME/transformers
-# optional explicit token:
-# export HUGGINGFACE_HUB_TOKEN=<your_hf_token>
-
-# EvolutionaryScale Forge API (only if using --esm-backend forge)
-# export ESM_API_TOKEN=<your_forge_token>
-
-# AWS/S3 (required if s3_sync.enabled=true or manual aws s3 sync)
-# Prefer instance role. If not using instance role, export:
-# export AWS_ACCESS_KEY_ID=<...>
-# export AWS_SECRET_ACCESS_KEY=<...>
-# export AWS_SESSION_TOKEN=<...>   # if temporary credentials
-# export AWS_DEFAULT_REGION=us-east-1
-```
-
-Notes:
-
-- Keep tokens out of git. Do not commit them to configs or scripts.
-- For HF login flow, run `huggingface-cli login` once in the active environment.
-
-## 2) Download and Unpack DISPEF
-
-```bash
-mkdir -p /opt/dlami/nvme/esm3_gnn_distill_baseline/data/raw/dispef
-curl -L "https://zenodo.org/api/records/13755810/files-archive" -o /opt/dlami/nvme/esm3_gnn_distill_baseline/data/raw/dispef/zenodo_13755810_files_archive.zip
-unzip -o /opt/dlami/nvme/esm3_gnn_distill_baseline/data/raw/dispef/zenodo_13755810_files_archive.zip -d /opt/dlami/nvme/esm3_gnn_distill_baseline/data/raw/dispef
-```
-
-Or:
-
-```bash
-bash /opt/dlami/nvme/esm3_gnn_distill_baseline/scripts/download_dispef.sh
-```
-
-## 3) Preprocess DISPEF-M
-
-This step:
-
-- parses `DISPEF_M_tr.pt` and `DISPEF_M_te.pt` directly
-- extracts `N`, `CA`, `C`, `O` backbone coordinates (in nanometers)
-- computes 8-class DSSP labels from backbone coordinates using mdtraj (version 1.10.1), matching the paper
-- stores residue identity + atom identity + coordinates + DSSP labels per protein as NPZ
-- applies official train/test split; 10% of training proteins held out as validation
-
-```bash
-source ~/miniforge3/etc/profile.d/conda.sh
-conda activate /opt/dlami/nvme/envs/esm3_gnn_distill
-
-python -m data.preprocess_dispef \
-  --raw-root /opt/dlami/nvme/esm3_gnn_distill_baseline/data/raw/dispef \
-  --processed-root /opt/dlami/nvme/esm3_gnn_distill_baseline/data/processed \
-  --dataset-name dispef_m \
-  --seed 42
-```
-
-Auto-detect wrapper script:
-
-```bash
-bash /opt/dlami/nvme/esm3_gnn_distill_baseline/scripts/preprocess_dispef_m.sh
-```
-
-Notes:
-
-- DISPEF coordinates are stored in nanometers; mdtraj accepts nm natively — no unit conversion needed.
-- DSSP labels are class indices 0-7 mapping to `["G","H","I","T","E","B","S","C"]`.
-- Preprocessing clears old `processed/<dataset>/proteins/*.npz` before writing new output.
-
-## 4) Generate Teacher Labels (cached)
-
-Teacher outputs are cached once under:
-
-- `/opt/dlami/nvme/esm3_gnn_distill_baseline/cache/teacher/dispef_m/*.npz`
-
-Each cached file contains:
-
-- `teacher_probs_residue`: `[L, 8]`
-- `teacher_probs_node`: `[3L, 8]` (residue targets duplicated to `N/CA/C`)
-
-ESM3 is run with the DISPEF-M backbone coordinates as structure input (in addition to sequence), so its SS8 predictions are conditioned on the same conformations used to compute mdtraj DSSP labels. This keeps the two training signals consistent and avoids gradient conflict during distillation.
-
-Run:
-
-```bash
-source ~/miniforge3/etc/profile.d/conda.sh
-conda activate /opt/dlami/nvme/envs/esm3_gnn_distill
-
-python -m teacher.generate_teacher_labels \
-  --processed-root /opt/dlami/nvme/esm3_gnn_distill_baseline/data/processed \
-  --dataset-name dispef_m \
-  --teacher-cache-root /opt/dlami/nvme/esm3_gnn_distill_baseline/cache/teacher \
-  --provider esm3 \
-  --esm-backend local \
-  --split all \
-  --device cuda
-```
-
-To regenerate existing labels with structure conditioning, add `--overwrite`.
-
-Optional:
-
-- add `--fetch-uniprot-sequences` if you want to override stored/inferred sequences
-- add `--max-samples 10` for a quick auth/backend smoke test
-
-Note: in `esm==3.2.x`, secondary-structure logits can be returned as 11-token vocab (`<pad>, <motif>, <unk>, G,H,I,T,E,B,S,C`). The wrapper projects these to SS8 (`G,H,I,T,E,B,S,C`) automatically.
-
-### ESM3 access troubleshooting
-
-If you see a 401/gated-model error for `EvolutionaryScale/esm3-sm-open-v1`, authenticate Hugging Face and keep cache on NVMe:
-
-```bash
-export HF_HOME=/opt/dlami/nvme/esm3_gnn_distill_baseline/cache/huggingface
-export HUGGINGFACE_HUB_CACHE=$HF_HOME/hub
-export TRANSFORMERS_CACHE=$HF_HOME/transformers
-huggingface-cli login
-```
-
-Then rerun teacher labeling with `--esm-backend local` (or `auto`).
-
-If you use EvolutionaryScale Forge API instead of local HF weights:
-
-```bash
-export ESM_API_TOKEN=<your_forge_token>
-python -m teacher.generate_teacher_labels ... --provider esm3 --esm-backend forge
-```
-
-### Use both GPUs for teacher labeling
-
-Teacher labeling is one process per GPU. Use sharding to run two processes in parallel without overlap:
-
-```bash
-# Terminal 1 / tmux pane 1
-python -m teacher.generate_teacher_labels \
-  --processed-root /opt/dlami/nvme/esm3_gnn_distill_baseline/data/processed \
-  --dataset-name dispef_m \
-  --teacher-cache-root /opt/dlami/nvme/esm3_gnn_distill_baseline/cache/teacher \
-  --provider esm3 \
-  --esm-backend local \
-  --split all \
-  --device cuda:0 \
-  --num-shards 2 \
-  --shard-id 0
-
-# Terminal 2 / tmux pane 2
-python -m teacher.generate_teacher_labels \
-  --processed-root /opt/dlami/nvme/esm3_gnn_distill_baseline/data/processed \
-  --dataset-name dispef_m \
-  --teacher-cache-root /opt/dlami/nvme/esm3_gnn_distill_baseline/cache/teacher \
-  --provider esm3 \
-  --esm-backend local \
-  --split all \
-  --device cuda:1 \
-  --num-shards 2 \
-  --shard-id 1
-```
-
-## 5) Train
-
-Training uses the Schake v2 architecture with the paper protocol:
-
-- Schake v2 (`model.name: schake`, `hidden_channels=32`, `num_layers=2`)
-- official DISPEF-M train/test split; validation holdout enabled (10% of train, early stopping patience=20)
-- 120 epochs, batch 50, Adam lr=1e-3, StepLR(γ=0.9, step=3), weight decay 1e-6
-- loss: teacher soft-CE + DSSP auxiliary CE (`lambda_teacher=1.0`, `lambda_dssp=1.0`)
-- Schake builds its own radius graph internally (SAKE: 0.25–1.0 nm, SchNet: 1.0–2.5 nm)
-- mixed precision (AMP) enabled
-
-```bash
-source ~/miniforge3/etc/profile.d/conda.sh
-conda activate /opt/dlami/nvme/envs/esm3_gnn_distill
-
-cd /opt/dlami/nvme/esm3_gnn_distill_baseline
-python -m train.train \
-  --config configs/paper_dispef_m.yaml \
-  --run-name baseline
-```
-
-Or:
-
-```bash
-bash /opt/dlami/nvme/esm3_gnn_distill_baseline/scripts/train_baseline.sh
-```
-
-Expected throughput: ~70 seconds/epoch → ~2.3 hours for 120 epochs on a single A10/A100 GPU.
-
-The trainer performs a preflight check and will stop with a detailed missing-label report if teacher cache files are incomplete.
-
-### Optional Weights & Biases logging
-
-Install once (if not already in env):
-
-```bash
-pip install wandb
-```
-
-Login and set API key in the shell:
-
-```bash
-export WANDB_API_KEY=<your_wandb_api_key>
-wandb login
-```
-
-Config (`configs/paper_dispef_m.yaml`):
-
-- `wandb.enabled: true`
-- `wandb.entity: xingyuhu95-carnegie-mellon-university`
-- `wandb.project: pLM_KD`
-- `wandb.name: baseline`
-- `train.log_every_steps: 100` (batch-level W&B updates)
-
-If W&B init fails (for example, missing API key), training continues without W&B and logs a warning.
-
-### Optional S3 autosync (checkpoints + logs)
-
-The trainer can upload run artifacts to S3 during training.
-
-Config (`configs/paper_dispef_m.yaml`):
-
-- `s3_sync.enabled: true`
-- `s3_sync.bucket_prefix: s3://02750s3/active-learning-plm-distillation`
-- `s3_sync.upload_last_each_epoch: true` (uploads `last.pt` every epoch)
-- `s3_sync.upload_best: true`
-- `s3_sync.upload_epoch_checkpoints: false` (optional)
-- `s3_sync.upload_run_artifacts: true` (uploads `train.log` / `history.csv`)
-
-Multiple experiments are isolated automatically under:
-
-- `s3://.../<run_dir_name>/checkpoints/<run_dir_name>/...`
-- `s3://.../<run_dir_name>/outputs/<run_dir_name>/...`
-
-Prerequisite: AWS credentials (instance role, `aws configure`, or SSO) must be available in the training shell.
-
-### Instance stop/start recovery notes
-
-If your NVMe data is ephemeral, do this before stopping the instance:
-
-1. Push code changes to GitHub.
-2. Sync critical artifacts to S3:
-   - `checkpoints/`
-   - `outputs/`
-   - `cache/teacher/`
-   - `data/processed/`
-3. Optionally skip `data/raw/` if you can re-download DISPEF.
-
-Example:
-
-```bash
-export BUCKET_PREFIX="s3://02750s3/active-learning-plm-distillation/$(date -u +%Y%m%d_%H%M%S)"
-cd /opt/dlami/nvme/esm3_gnn_distill_baseline
-aws s3 sync checkpoints "${BUCKET_PREFIX}/checkpoints/"
-aws s3 sync outputs "${BUCKET_PREFIX}/outputs/"
-aws s3 sync cache/teacher "${BUCKET_PREFIX}/teacher_cache/"
-aws s3 sync data/processed "${BUCKET_PREFIX}/data_processed/"
-```
-
-After starting a new instance:
-
-1. Clone/pull repo.
-2. Recreate/activate conda env.
-3. Restore artifacts from S3.
-4. Resume training from `checkpoints/<RUN_DIR>/last.pt` if needed.
-
-### Run in background (survives SSH disconnect)
-
-Recommended: `tmux`
-
-```bash
-tmux new -s distill_run
-source ~/miniforge3/etc/profile.d/conda.sh
-conda activate /opt/dlami/nvme/envs/esm3_gnn_distill
-cd /opt/dlami/nvme/esm3_gnn_distill_baseline
-python -m train.train --config configs/paper_dispef_m.yaml --run-name baseline
-# Detach: Ctrl+b then d
-```
-
-Reattach later:
-
-```bash
-tmux attach -t distill_run
-```
-
-Alternative: `nohup`
-
-```bash
-cd /opt/dlami/nvme/esm3_gnn_distill_baseline
-nohup /opt/dlami/nvme/envs/esm3_gnn_distill/bin/python -m train.train \
-  --config configs/paper_dispef_m.yaml \
-  --run-name baseline \
-  > logs/train_nohup.log 2>&1 &
-```
-
-Watch progress:
-
-```bash
-tail -f /opt/dlami/nvme/esm3_gnn_distill_baseline/logs/train_nohup.log
-```
-
-## 6) Evaluate
-
-```bash
-source ~/miniforge3/etc/profile.d/conda.sh
-conda activate /opt/dlami/nvme/envs/esm3_gnn_distill
-
-python -m eval.evaluate \
-  --config /opt/dlami/nvme/esm3_gnn_distill_baseline/configs/paper_dispef_m.yaml \
-  --checkpoint /opt/dlami/nvme/esm3_gnn_distill_baseline/checkpoints/<RUN_DIR>/best.pt \
-  --split test \
-  --batch-size 16 \
-  --save-predictions \
-  --output-dir /opt/dlami/nvme/esm3_gnn_distill_baseline/outputs/eval/<RUN_DIR>
-```
-
-Reported metrics:
-
-- teacher cross-entropy
-- teacher KL divergence
-- top-1 SS8 accuracy vs teacher argmax
-- DSSP accuracy (hard labels from mdtraj)
+Key config (`configs/colab_demo.yaml` / `configs/paper_dispef_m.yaml`):
+
+| Parameter | Value |
+|-----------|-------|
+| `hidden_channels` | 32 |
+| `num_layers` | 2 |
+| `kernel_size` | 18 |
+| `sake_low/high_cut` | 0.25 / 1.0 nm |
+| `schnet_low/high_cut` | 1.0 / 2.5 nm |
+| `num_heads` | 4 |
+| `num_out_layers` | 3 |
 
 ## Distillation Losses
 
-- soft-label CE: `-sum(p_teacher * log_softmax(student_logits))`
-- DSSP auxiliary CE: `cross_entropy(logits, dssp_class_index, ignore_index=-100)`
-- KL distillation: `KL(p_teacher || p_student)` with optional temperature
+$$\mathcal{L} = \lambda_{\text{teacher}} \cdot \underbrace{-\sum_c p^{\text{teacher}}_c \log p^{\text{student}}_c}_{\text{soft CE}} + \lambda_{\text{DSSP}} \cdot \underbrace{-\log p^{\text{student}}_{y_{\text{DSSP}}}}_{\text{hard CE}}$$
 
-Total:
+- **Soft CE** (`lambda_teacher=1.0`): match the full ESM3 SS8 probability distribution
+- **DSSP CE** (`lambda_dssp=1.0`): auxiliary hard-label supervision from mdtraj
+- **KL divergence**: alternative to soft CE (`teacher_loss_type: kl`)
 
-- `lambda_teacher * teacher_loss + lambda_dssp * dssp_loss`
+## Colab Pipeline (step by step)
 
-## Active-Learning Readiness (without implementing AL yet)
+### 1 · Install dependencies
 
-- splits are explicit in `splits.json`: `train`, `val`, `test`, `pool_unassigned`
-- teacher querying is isolated in `teacher/`
-- `SplitIndex` helper supports moving IDs between splits incrementally
+```python
+import torch
+torch_ver = torch.__version__.split('+')[0]
+cuda_ver  = torch.version.cuda.replace('.', '')
+pyg_url   = f'https://data.pyg.org/whl/torch-{torch_ver}+cu{cuda_ver}.html'
 
+!pip install -q torch-geometric
+!pip install -q torch-scatter torch-cluster -f {pyg_url}
+!pip install -q biopython 'mdtraj==1.10.1' pyyaml tqdm scikit-learn matplotlib
+```
+
+`torch-scatter` must match the installed PyTorch + CUDA build — the detection above handles this automatically.
+
+### 2 · Clone and configure workspace
+
+```python
+!git clone -b colab-dev https://github.com/hxyue1/active-learning-plm-distillation.git
+import os, sys, yaml
+os.chdir('/content/active-learning-plm-distillation')
+sys.path.insert(0, os.getcwd())
+
+WORKSPACE = '/content/dispef_ws'
+SUBSET    = 200   # proteins to preprocess; set 0 for full DISPEF-M
+
+# Write runtime config with correct workspace paths
+cfg = yaml.safe_load(open('configs/colab_demo.yaml'))
+cfg['paths'].update({k: f'{WORKSPACE}/{v}' for k, v in {
+    'raw_dispef_root'   : 'data/raw/dispef',
+    'processed_root'    : 'data/processed',
+    'teacher_cache_root': 'cache/teacher',
+    'outputs_root'      : 'outputs',
+    'checkpoints_root'  : 'checkpoints',
+}.items()})
+with open('/tmp/colab_runtime.yaml', 'w') as f:
+    yaml.dump(cfg, f)
+```
+
+### 3 · Download DISPEF-M
+
+Zenodo record 13755810 is the M subset only — not the full DISPEF dataset.
+
+```python
+!curl -L 'https://zenodo.org/api/records/13755810/files-archive' \
+      -o {WORKSPACE}/data/raw/dispef/archive.zip
+!unzip -q {WORKSPACE}/data/raw/dispef/archive.zip \
+       -d {WORKSPACE}/data/raw/dispef/
+```
+
+### 4 · Preprocess
+
+```bash
+python -m data.preprocess_dispef \
+  --raw-root       /content/dispef_ws/data/raw/dispef  \
+  --processed-root /content/dispef_ws/data/processed   \
+  --dataset-name   dispef_m                            \
+  --val-fraction 0.1 --seed 42                         \
+  --max-files 200
+```
+
+`--max-files N` caps total proteins (train + test combined). Omit for full dataset.
+
+### 5 · Generate mock teacher labels (no ESM3 needed)
+
+```bash
+python scripts/generate_mock_teacher.py \
+  --processed-root     /content/dispef_ws/data/processed \
+  --dataset-name       dispef_m                          \
+  --teacher-cache-root /content/dispef_ws/cache/teacher  \
+  --label-smoothing 0.05
+```
+
+Creates one-hot (+ smoothed) teacher probability files from DSSP labels.  With mock labels the soft-CE loss is equivalent to hard-label CE — sufficient for pipeline testing.  Real distillation requires ESM3 labels (see below).
+
+### 6 · Train
+
+```bash
+python -m train.train \
+  --config   /tmp/colab_runtime.yaml \
+  --run-name colab_demo
+```
+
+### 7 · Evaluate
+
+```bash
+python -m eval.evaluate \
+  --config     /tmp/colab_runtime.yaml              \
+  --checkpoint /content/dispef_ws/checkpoints/<RUN>/best.pt \
+  --split test                                      \
+  --output-dir /content/dispef_ws/outputs/eval/<RUN>
+```
+
+Metrics saved to `eval_summary_test.json`:
+
+- `teacher_ce` — soft-label cross-entropy
+- `teacher_kl` — KL divergence
+- `teacher_top1_acc` — top-1 accuracy vs teacher argmax
+- `dssp_acc` — accuracy vs DSSP hard labels
+
+## Real Distillation (with ESM3 teacher)
+
+To generate actual ESM3 SS8 teacher labels (requires large GPU or Forge API key):
+
+```bash
+# Local ESM3 (needs ~16 GB VRAM)
+python -m teacher.generate_teacher_labels \
+  --processed-root /content/dispef_ws/data/processed \
+  --dataset-name dispef_m \
+  --teacher-cache-root /content/dispef_ws/cache/teacher \
+  --provider esm3 --esm-backend local --split all --device cuda
+
+# EvolutionaryScale Forge API (no local GPU needed)
+export ESM_API_TOKEN=<your_forge_token>
+python -m teacher.generate_teacher_labels \
+  --processed-root /content/dispef_ws/data/processed \
+  --dataset-name dispef_m \
+  --teacher-cache-root /content/dispef_ws/cache/teacher \
+  --provider esm3 --esm-backend forge --split all
+```
+
+Note: ESM3 returns SS8 logits as an 11-token vocab in `esm==3.2.x` — the wrapper projects them to the 8-class SS8 order `[G,H,I,T,E,B,S,C]` automatically.
+
+## Active-Learning Readiness
+
+- splits stored explicitly in `splits.json`: `train`, `val`, `test`, `pool_unassigned`
+- `SplitIndex` in `data/pyg_dataset.py` supports moving IDs between splits for future AL cycles
+- teacher querying isolated in `teacher/`
 
 ## Reference
 
