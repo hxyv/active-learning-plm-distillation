@@ -143,7 +143,7 @@ unzip "${RAW}/dispef_archive.zip" -d "${RAW}/"
 rm "${RAW}/dispef_archive.zip"
 ```
 
-The archive contains `DISPEF_M_tr.pt`, `DISPEF_M_te.pt`, `DISPEF_S_tr.pt`, `DISPEF_S_te.pt`, and `dataset_prep.py`.
+The archive contains `DISPEF_M_tr.pt`, `DISPEF_M_te.pt`, and `dataset_prep.py` (plus other variants).
 
 ## 4 · Preprocess
 
@@ -179,8 +179,6 @@ predictions are conditioned on the same conformations used to compute DSSP label
 # DISPEF-M (default)
 sbatch slurm/teacher.slurm
 
-# DISPEF-S
-sbatch --export=ALL,DATASET=dispef_s slurm/teacher.slurm
 ```
 
 To speed up labeling on a large dataset, submit multiple shards in parallel — each job processes

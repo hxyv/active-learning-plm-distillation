@@ -20,18 +20,9 @@ conda activate /ocean/projects/cis250233p/xhu15/envs/esm3_gnn_distill
 
 cd "${PROJECT_ROOT}"
 
-# DISPEF-M
 python -m data.preprocess_dispef \
   --raw-root       /ocean/projects/cis250233p/xhu15/data/raw/dispef \
   --processed-root /ocean/projects/cis250233p/xhu15/data/processed \
   --dataset-name   dispef_m \
-  --val-fraction   0.1 \
-  --seed           42
-
-# DISPEF-S
-python -m data.preprocess_dispef \
-  --raw-root       /ocean/projects/cis250233p/xhu15/data/raw/dispef \
-  --processed-root /ocean/projects/cis250233p/xhu15/data/processed \
-  --dataset-name   dispef_s \
   --val-fraction   0.1 \
   --seed           42
