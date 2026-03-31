@@ -103,7 +103,65 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 python -c "import torch_scatter, torch_cluster; print('PyG extensions OK')"
 ```
 
-## 2 · Download DISPEF-M
+## 2 · API Credentials
+
+### Hugging Face (ESM3 local weights)
+
+ESM3 is a gated model — you must request access at
+`https://huggingface.co/EvolutionaryScale/esm3-sm-open-v1` before downloading weights.
+
+```bash
+module load anaconda3/2024.10-1
+conda activate idl_diffusion_env
+
+pip install huggingface_hub
+huggingface-cli login        # paste your HF token when prompted
+```
+
+Or set the token non-interactively (useful in SLURM jobs):
+
+```bash
+export HF_TOKEN="hf_..."
+huggingface-cli login --token "${HF_TOKEN}" --add-to-git-credential
+```
+
+The token is stored in `~/.cache/huggingface/token` and reused automatically.  
+Skip this step if you are using the Forge API backend instead.
+
+### EvolutionaryScale Forge API (ESM3 via API, no local weights needed)
+
+Get a token at `https://forge.evolutionaryscale.ai`.
+
+```bash
+export ESM_API_TOKEN="your_forge_token"
+```
+
+Add to `~/.bashrc` to persist across sessions:
+
+```bash
+echo 'export ESM_API_TOKEN="your_forge_token"' >> ~/.bashrc
+```
+
+### Weights & Biases
+
+```bash
+module load anaconda3/2024.10-1
+conda activate idl_diffusion_env
+
+wandb login                  # paste your W&B API key when prompted
+```
+
+Or non-interactively:
+
+```bash
+export WANDB_API_KEY="your_wandb_key"
+wandb login --relogin
+```
+
+W&B is **disabled by default** in [`configs/psc_dispef_m.yaml`](configs/psc_dispef_m.yaml).  
+Set `wandb.enabled: true` and `wandb.entity: <your_username>` to enable it.
+
+## 3 · Download DISPEF-M
 
 ```bash
 WORKSPACE="/ocean/projects/cis250233p/${USER}/esm3_gnn_distill"
@@ -118,7 +176,7 @@ wget -O "${RAW}/dataset_prep.py" \
   "https://zenodo.org/records/13755810/files/dataset_prep.py"
 ```
 
-## 3 · Preprocess
+## 4 · Preprocess
 
 ```bash
 WORKSPACE="/ocean/projects/cis250233p/${USER}/esm3_gnn_distill"
@@ -147,7 +205,7 @@ python -m data.preprocess_dispef \
 
 `--max-files-per-split N` caps train and test independently so both splits always have data.
 
-## 4 · Generate Teacher Labels
+## 5 · Generate Teacher Labels
 
 ### Option A — Mock teacher (no ESM3, for pipeline testing)
 
@@ -180,7 +238,7 @@ python -m teacher.generate_teacher_labels \
   --provider esm3 --esm-backend forge --split all
 ```
 
-## 5 · Submit Training Job
+## 6 · Submit Training Job
 
 ```bash
 cd "${WORKSPACE}/active-learning-plm-distillation"
@@ -197,7 +255,7 @@ tail -f /ocean/projects/cis250233p/${USER}/esm3_gnn_distill/logs/slurm/<JOB_ID>.
 Training config: [`configs/psc_dispef_m.yaml`](configs/psc_dispef_m.yaml)  
 W&B is disabled by default; set `wandb.enabled: true` and fill in `wandb.entity` to enable.
 
-## 6 · Evaluate
+## 7 · Evaluate
 
 ```bash
 WORKSPACE="/ocean/projects/cis250233p/${USER}/esm3_gnn_distill"
