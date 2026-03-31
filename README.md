@@ -77,19 +77,20 @@ Run interactively on a login node (no GPU needed for env creation):
 
 ```bash
 module load anaconda3/2024.10-1
+module load cuda/12.4.0
 
 conda create -n idl_diffusion_env python=3.10 -y
 conda activate idl_diffusion_env
 
-# PyTorch 2.3 + CUDA 12.1 (matches Bridge-2 H100 drivers)
-pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cu121
+# PyTorch 2.4 + CUDA 12.4 (matches Bridge-2 cuda/12.4.0)
+pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu124
 
 # PyG core
 pip install torch-geometric
 
 # torch-scatter and torch-cluster (must match torch + cuda build)
 pip install torch-scatter torch-cluster \
-  -f https://data.pyg.org/whl/torch-2.3.0+cu121.html
+  -f https://data.pyg.org/whl/torch-2.4.0+cu124.html
 
 # other dependencies
 pip install mdtraj biopython pyyaml tqdm scikit-learn matplotlib requests wandb

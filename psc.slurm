@@ -17,6 +17,7 @@ CONFIG="${PROJECT_ROOT}/configs/psc_dispef_m.yaml"
 mkdir -p "${WORKSPACE}/logs/slurm"
 
 module load anaconda3/2024.10-1
+module load cuda/12.4.0
 conda activate idl_diffusion_env
 
 cd "${PROJECT_ROOT}"
