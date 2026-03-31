@@ -5,7 +5,7 @@
 #SBATCH --gpus=h100-80:1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=2000M
+#SBATCH --mem=16000M
 #SBATCH -t 4:00:00
 #SBATCH -A cis250233p
 #SBATCH --output=/ocean/projects/cis250233p/xhu15/logs/slurm/%j.out
