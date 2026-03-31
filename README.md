@@ -43,7 +43,7 @@ Not implemented:
 ### 1.1 Directories
 
 ```bash
-mkdir -p /ocean/projects/cis250233p/xhu15/{data/raw/dispef,data/processed,cache/teacher,checkpoints,logs/slurm,outputs}
+mkdir -p /ocean/projects/cis250233p/xhu15/{data/raw/dispef,data/processed,cache/teacher,checkpoints,logs/slurm,outputs,envs}
 ```
 
 ### 1.2 Clone the repo
@@ -61,8 +61,8 @@ Run interactively on a login node (no GPU needed for env creation):
 module load anaconda3/2024.10-1
 module load cuda/12.4.0
 
-conda create -n esm3_gnn_distill python=3.10 -y
-source activate esm3_gnn_distill
+conda create -p /ocean/projects/cis250233p/xhu15/envs/esm3_gnn_distill python=3.10 -y
+source activate /ocean/projects/cis250233p/xhu15/envs/esm3_gnn_distill
 
 # PyTorch 2.4 + CUDA 12.4 (matches Bridge-2 cuda/12.4.0)
 pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu124
@@ -102,7 +102,7 @@ Before that first run:
 
 ```bash
 module load anaconda3/2024.10-1
-source activate esm3_gnn_distill
+source activate /ocean/projects/cis250233p/xhu15/envs/esm3_gnn_distill
 
 pip install huggingface_hub
 huggingface-cli login        # paste your HF token when prompted
@@ -114,7 +114,7 @@ Token stored in `~/.cache/huggingface/token` and reused automatically by all sub
 
 ```bash
 module load anaconda3/2024.10-1
-source activate esm3_gnn_distill
+source activate /ocean/projects/cis250233p/xhu15/envs/esm3_gnn_distill
 wandb login                  # paste your W&B API key when prompted
 ```
 
