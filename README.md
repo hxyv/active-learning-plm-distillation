@@ -146,8 +146,8 @@ Download the full archive from Zenodo record 13755810:
 ```bash
 RAW="/ocean/projects/cis250233p/xhu15/data/raw/dispef"
 
-wget -O "${RAW}/dispef_archive.zip" \
-  "https://zenodo.org/records/13755810/files-archive"
+curl -L "https://zenodo.org/api/records/13755810/files-archive" \
+  -o "${RAW}/dispef_archive.zip"
 
 unzip "${RAW}/dispef_archive.zip" -d "${RAW}/"
 rm "${RAW}/dispef_archive.zip"
