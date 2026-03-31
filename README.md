@@ -4,7 +4,7 @@ Reproduction of the distillation stage from:
 
 - Airas and Zhang (2026), *Knowledge Distillation of a Protein Language Model Yields a Foundational Implicit Solvent Model*
 
-Running on **PSC Bridge-2** (H100 GPU, `GPU-shared` partition, allocation `cis250233p`).
+Running on **PSC Bridge-2**.
 
 Implemented scope:
 
