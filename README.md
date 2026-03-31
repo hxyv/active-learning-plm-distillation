@@ -74,6 +74,9 @@ pip install torch-geometric
 pip install torch-scatter torch-cluster \
   -f https://data.pyg.org/whl/torch-2.4.0+cu124.html
 
+# ESM3 (EvolutionaryScale SDK — weights download automatically on first use via HuggingFace)
+pip install esm
+
 # other dependencies
 pip install mdtraj biopython pyyaml tqdm scikit-learn matplotlib requests wandb
 ```
@@ -89,8 +92,13 @@ python -c "import torch_scatter, torch_cluster; print('PyG extensions OK')"
 
 ### Hugging Face (ESM3 local weights)
 
-ESM3 is a gated model — request access at
-`https://huggingface.co/EvolutionaryScale/esm3-sm-open-v1` before downloading weights.
+ESM3 is a gated model on HuggingFace. There is no separate download step — weights (~1.5 GB)
+are downloaded automatically to `HF_HOME` the first time `slurm/teacher.slurm` runs.
+
+Before that first run:
+
+1. Request model access at `https://huggingface.co/EvolutionaryScale/esm3-sm-open-v1`
+2. Log in once on the login node:
 
 ```bash
 module load anaconda3/2024.10-1
@@ -100,14 +108,7 @@ pip install huggingface_hub
 huggingface-cli login        # paste your HF token when prompted
 ```
 
-Or non-interactively (for use inside SLURM jobs):
-
-```bash
-export HF_TOKEN="hf_..."
-huggingface-cli login --token "${HF_TOKEN}" --add-to-git-credential
-```
-
-Token stored in `~/.cache/huggingface/token` and reused automatically.
+Token stored in `~/.cache/huggingface/token` and reused automatically by all subsequent jobs.
 
 ### Weights & Biases
 
