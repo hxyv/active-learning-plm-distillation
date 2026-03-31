@@ -107,18 +107,7 @@ export HF_TOKEN="hf_..."
 huggingface-cli login --token "${HF_TOKEN}" --add-to-git-credential
 ```
 
-Token stored in `~/.cache/huggingface/token` and reused automatically.  
-Skip if using the Forge API backend instead.
-
-### EvolutionaryScale Forge API (ESM3 via API, no local weights needed)
-
-Get a token at `https://forge.evolutionaryscale.ai`.
-
-```bash
-# add to ~/.bashrc to persist across sessions
-echo 'export ESM_API_TOKEN="your_forge_token"' >> ~/.bashrc
-source ~/.bashrc
-```
+Token stored in `~/.cache/huggingface/token` and reused automatically.
 
 ### Weights & Biases
 
@@ -212,16 +201,7 @@ sbatch --export=ALL,DATASET=dispef_m slurm/teacher.slurm
 
 Add `--overwrite` to regenerate existing cached labels.
 
-### Option C — Forge API (no local GPU needed)
 
-```bash
-# add ESM_API_TOKEN to ~/.bashrc first (see §2)
-python -m teacher.generate_teacher_labels \
-  --processed-root     /ocean/projects/cis250233p/xhu15/data/processed \
-  --dataset-name       dispef_m \
-  --teacher-cache-root /ocean/projects/cis250233p/xhu15/cache/teacher \
-  --provider esm3 --esm-backend forge --split all
-```
 
 ## 6 · Submit Training Job
 
