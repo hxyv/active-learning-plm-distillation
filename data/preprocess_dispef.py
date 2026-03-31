@@ -44,6 +44,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-residues", type=int, default=10)
     parser.add_argument("--with-dssp", action="store_true", help="Use DSSP when parsing structure files")
     parser.add_argument("--max-files", type=int, default=0)
+    parser.add_argument("--max-files-per-split", type=int, default=0,
+                        help="Cap each split (train/test) independently. "
+                             "Overrides --max-files when set.")
     parser.add_argument(
         "--no-clean-output",
         action="store_true",
@@ -543,11 +546,15 @@ def preprocess_pt_mode(args: argparse.Namespace, dataset_root: Path) -> Tuple[Li
     train_ids: List[str] = []
     test_ids: List[str] = []
 
+    per_split_cap = args.max_files_per_split  # 0 = no cap
     seen = 0
+    split_seen: Dict[str, int] = {"train": 0, "test": 0}
     for split_name, ds in [("train", tr_ds), ("test", te_ds)]:
         logger.info("Parsing %s split (%d samples)", split_name, len(ds))
         for i in range(len(ds)):
-            if args.max_files > 0 and seen >= args.max_files:
+            if per_split_cap > 0 and split_seen[split_name] >= per_split_cap:
+                break
+            if per_split_cap == 0 and args.max_files > 0 and seen >= args.max_files:
                 break
             tup = ds[i]
             if not isinstance(tup, (tuple, list)):
@@ -607,11 +614,12 @@ def preprocess_pt_mode(args: argparse.Namespace, dataset_root: Path) -> Tuple[Li
             save_sample(sample, proteins_dir)
             samples.append(sample)
             seen += 1
+            split_seen[split_name] += 1
             if split_name == "train":
                 train_ids.append(sample_id)
             else:
                 test_ids.append(sample_id)
-        if args.max_files > 0 and seen >= args.max_files:
+        if per_split_cap == 0 and args.max_files > 0 and seen >= args.max_files:
             break
 
     if not samples:
