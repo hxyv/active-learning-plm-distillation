@@ -139,15 +139,21 @@ wandb login --relogin
 W&B is **disabled by default** in [`configs/psc_dispef_m.yaml`](configs/psc_dispef_m.yaml).  
 Set `wandb.enabled: true` and `wandb.entity: xhu15` to enable it.
 
-## 3 · Download DISPEF-M
+## 3 · Download DISPEF
+
+Download the full archive from Zenodo record 13755810:
 
 ```bash
 RAW="/ocean/projects/cis250233p/xhu15/data/raw/dispef"
 
-wget -O "${RAW}/DISPEF_M_tr.pt"   "https://zenodo.org/records/13755810/files/DISPEF_M_tr.pt"
-wget -O "${RAW}/DISPEF_M_te.pt"   "https://zenodo.org/records/13755810/files/DISPEF_M_te.pt"
-wget -O "${RAW}/dataset_prep.py"  "https://zenodo.org/records/13755810/files/dataset_prep.py"
+wget -O "${RAW}/dispef_archive.zip" \
+  "https://zenodo.org/records/13755810/files-archive"
+
+unzip "${RAW}/dispef_archive.zip" -d "${RAW}/"
+rm "${RAW}/dispef_archive.zip"
 ```
+
+The archive contains `DISPEF_M_tr.pt`, `DISPEF_M_te.pt`, `DISPEF_S_tr.pt`, `DISPEF_S_te.pt`, and `dataset_prep.py`.
 
 ## 4 · Preprocess
 
@@ -156,7 +162,7 @@ cd /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
 module load anaconda3/2024.10-1
 source activate esm3_gnn_distill
 
-# Full dataset
+# DISPEF-M
 python -m data.preprocess_dispef \
   --raw-root       /ocean/projects/cis250233p/xhu15/data/raw/dispef \
   --processed-root /ocean/projects/cis250233p/xhu15/data/processed \
@@ -164,15 +170,16 @@ python -m data.preprocess_dispef \
   --val-fraction   0.1 \
   --seed           42
 
-# Or cap per split for quick testing (--max-files-per-split caps train and test independently)
+# DISPEF-S
 python -m data.preprocess_dispef \
   --raw-root       /ocean/projects/cis250233p/xhu15/data/raw/dispef \
   --processed-root /ocean/projects/cis250233p/xhu15/data/processed \
-  --dataset-name   dispef_m \
+  --dataset-name   dispef_s \
   --val-fraction   0.1 \
-  --seed           42 \
-  --max-files-per-split 200
+  --seed           42
 ```
+
+For quick pipeline testing, add `--max-files-per-split 200` to cap train and test independently.
 
 ## 5 · Generate Teacher Labels
 
