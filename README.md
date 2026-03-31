@@ -53,26 +53,22 @@ cd /ocean/projects/cis250233p/xhu15
 git clone -b psc-dev https://github.com/hxyue1/active-learning-plm-distillation.git
 ```
 
-### 1.3 Create the conda environment
+### 1.3 Set up the conda environment
 
-Run interactively on a login node (no GPU needed for env creation):
+Activate the existing env and install any missing dependencies:
 
 ```bash
 module load anaconda3/2024.10-1
 module load cuda/12.4.0
-
-conda create -n idl_diffusion_env python=3.10 -y
 conda activate idl_diffusion_env
-
-# PyTorch 2.4 + CUDA 12.4 (matches Bridge-2 cuda/12.4.0)
-pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu124
 
 # PyG core
 pip install torch-geometric
 
-# torch-scatter and torch-cluster (must match torch + cuda build)
+# torch-scatter and torch-cluster — must match your installed torch + CUDA build
+TORCH_VER=$(python -c "import torch; print(torch.__version__.split('+')[0])")
 pip install torch-scatter torch-cluster \
-  -f https://data.pyg.org/whl/torch-2.4.0+cu124.html
+  -f "https://data.pyg.org/whl/torch-${TORCH_VER}+cu124.html"
 
 # other dependencies
 pip install mdtraj biopython pyyaml tqdm scikit-learn matplotlib requests wandb
