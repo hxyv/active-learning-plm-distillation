@@ -6,7 +6,6 @@ import contextlib
 import csv
 import json
 import math
-import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -40,8 +39,6 @@ class Trainer:
 
         self.history_path = self.run_dir / "history.csv"
         self.metrics_path = self.run_dir / "metrics_final.json"
-
-        self._init_s3_sync()
 
         self.multi_gpu = bool(cfg["train"].get("multi_gpu", False))
         self.use_amp = bool(cfg["train"].get("mixed_precision", True)) and device.type == "cuda"
@@ -84,62 +81,6 @@ class Trainer:
         resume_path = train_cfg.get("resume_checkpoint", "")
         if resume_path:
             self._load_checkpoint(Path(resume_path))
-
-    def _init_s3_sync(self) -> None:
-        s3_cfg = self.cfg.get("s3_sync", {})
-        self.s3_enabled = bool(s3_cfg.get("enabled", False))
-        self.s3_fail_on_error = bool(s3_cfg.get("fail_on_error", False))
-        self.s3_upload_last_each_epoch = bool(s3_cfg.get("upload_last_each_epoch", True))
-        self.s3_upload_best = bool(s3_cfg.get("upload_best", True))
-        self.s3_upload_epoch_checkpoints = bool(s3_cfg.get("upload_epoch_checkpoints", False))
-        self.s3_upload_run_artifacts = bool(s3_cfg.get("upload_run_artifacts", True))
-        self.s3_sync_every_epochs = int(s3_cfg.get("sync_every_epochs", 1))
-
-        bucket_prefix = str(s3_cfg.get("bucket_prefix", "")).strip().rstrip("/")
-        if self.s3_enabled and not bucket_prefix:
-            raise ValueError("s3_sync.enabled=true requires s3_sync.bucket_prefix")
-
-        self.s3_run_prefix = f"{bucket_prefix}/{self.run_dir.name}" if bucket_prefix else ""
-        if self.s3_enabled:
-            self.logger.info("S3 autosync enabled: %s", self.s3_run_prefix)
-
-    def _s3_cp(self, local_path: Path, s3_uri: str) -> bool:
-        cmd = ["aws", "s3", "cp", str(local_path), s3_uri, "--only-show-errors"]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            msg = (
-                f"S3 upload failed for {local_path} -> {s3_uri}: "
-                f"{proc.stderr.strip() or proc.stdout.strip() or 'unknown aws error'}"
-            )
-            if self.s3_fail_on_error:
-                raise RuntimeError(msg)
-            self.logger.warning(msg)
-            return False
-        return True
-
-    def _maybe_upload_run_artifacts(self) -> None:
-        if not self.s3_enabled or not self.s3_upload_run_artifacts:
-            return
-        for p in [self.run_dir / "train.log", self.history_path]:
-            if p.exists():
-                self._s3_cp(p, f"{self.s3_run_prefix}/outputs/{self.run_dir.name}/{p.name}")
-
-    def _maybe_upload_checkpoint(self, ckpt_path: Path, epoch: int, is_best: bool) -> None:
-        if not self.s3_enabled:
-            return
-        if self.s3_sync_every_epochs > 1 and (epoch % self.s3_sync_every_epochs) != 0 and not is_best:
-            return
-
-        name = ckpt_path.name
-        if name == "last.pt" and not self.s3_upload_last_each_epoch:
-            return
-        if name == "best.pt" and not self.s3_upload_best:
-            return
-        if name.startswith("epoch_") and not self.s3_upload_epoch_checkpoints:
-            return
-
-        self._s3_cp(ckpt_path, f"{self.s3_run_prefix}/checkpoints/{self.run_dir.name}/{name}")
-        self._maybe_upload_run_artifacts()
 
     def _build_grad_scaler(self):
         if not self.use_amp:
@@ -441,7 +382,6 @@ class Trainer:
             },
             path,
         )
-        self._maybe_upload_checkpoint(path, epoch=epoch, is_best=is_best)
         if is_best:
             self.logger.info("Saved new best checkpoint: %s", path)
 
@@ -599,11 +539,6 @@ class Trainer:
             "test_dssp_acc": test_metrics["dssp_acc"],
         }
         self.metrics_path.write_text(json.dumps(final, indent=2))
-        if self.s3_enabled:
-            self._s3_cp(self.metrics_path, f"{self.s3_run_prefix}/outputs/{self.run_dir.name}/{self.metrics_path.name}")
-            curve_path = self.run_dir / "learning_curves.png"
-            if curve_path.exists():
-                self._s3_cp(curve_path, f"{self.s3_run_prefix}/outputs/{self.run_dir.name}/{curve_path.name}")
         if self.wandb_run is not None:
             self.wandb_run.summary.update(final)
 

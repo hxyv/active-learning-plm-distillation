@@ -20,54 +20,36 @@ Not implemented:
 ## Project Layout
 
 ```
-active-learning-plm-distillation/
-├── configs/
-│   ├── psc_dispef_m.yaml         ← PSC config (no S3/W&B, ocean paths)
-│   └── paper_dispef_m.yaml       ← original AWS config
-├── data/
-│   ├── constants.py
-│   ├── dssp.py
-│   ├── graph_builder.py
-│   ├── io_utils.py
-│   ├── preprocess_dispef.py
-│   └── pyg_dataset.py
-├── models/
-│   ├── factory.py
-│   ├── gnn.py
-│   └── vendor/schake_model_v2.py
-├── scripts/
-│   ├── generate_mock_teacher.py
-│   ├── generate_teacher_labels.sh
-│   ├── preprocess_dispef_m.sh
-│   ├── train_baseline.sh
-│   └── eval_baseline.sh
-├── teacher/
-│   ├── esm3_teacher.py
-│   ├── generate_teacher_labels.py
-│   └── label_cache.py
-├── train/
-│   ├── losses.py
-│   ├── train.py
-│   └── trainer.py
-├── eval/
-│   ├── evaluate.py
-│   └── metrics.py
-└── psc.slurm                     ← SLURM job script
+/ocean/projects/cis250233p/xhu15/
+├── active-learning-plm-distillation/   ← this repo
+│   ├── configs/psc_dispef_m.yaml
+│   ├── data/
+│   ├── models/
+│   ├── scripts/
+│   ├── teacher/
+│   ├── train/
+│   ├── eval/
+│   └── psc.slurm
+├── data/raw/dispef/                    ← DISPEF-M tensors
+├── data/processed/                     ← preprocessed NPZ files
+├── cache/teacher/                      ← ESM3 teacher label cache
+├── checkpoints/                        ← saved model checkpoints
+├── outputs/                            ← eval outputs
+└── logs/slurm/                         ← SLURM stdout/stderr
 ```
 
 ## 1 · One-time Setup
 
-### 1.1 Workspace
+### 1.1 Directories
 
 ```bash
-WORKSPACE="/ocean/projects/cis250233p/${USER}/esm3_gnn_distill"
-mkdir -p "${WORKSPACE}"/{data/raw/dispef,data/processed,cache/teacher,checkpoints,logs/slurm,outputs}
+mkdir -p /ocean/projects/cis250233p/xhu15/{data/raw/dispef,data/processed,cache/teacher,checkpoints,logs/slurm,outputs}
 ```
 
 ### 1.2 Clone the repo
 
 ```bash
-cd "${WORKSPACE}"
+cd /ocean/projects/cis250233p/xhu15
 git clone -b psc-dev https://github.com/hxyue1/active-learning-plm-distillation.git
 ```
 
@@ -107,7 +89,7 @@ python -c "import torch_scatter, torch_cluster; print('PyG extensions OK')"
 
 ### Hugging Face (ESM3 local weights)
 
-ESM3 is a gated model — you must request access at
+ESM3 is a gated model — request access at
 `https://huggingface.co/EvolutionaryScale/esm3-sm-open-v1` before downloading weights.
 
 ```bash
@@ -118,28 +100,24 @@ pip install huggingface_hub
 huggingface-cli login        # paste your HF token when prompted
 ```
 
-Or set the token non-interactively (useful in SLURM jobs):
+Or non-interactively (for use inside SLURM jobs):
 
 ```bash
 export HF_TOKEN="hf_..."
 huggingface-cli login --token "${HF_TOKEN}" --add-to-git-credential
 ```
 
-The token is stored in `~/.cache/huggingface/token` and reused automatically.  
-Skip this step if you are using the Forge API backend instead.
+Token stored in `~/.cache/huggingface/token` and reused automatically.  
+Skip if using the Forge API backend instead.
 
 ### EvolutionaryScale Forge API (ESM3 via API, no local weights needed)
 
 Get a token at `https://forge.evolutionaryscale.ai`.
 
 ```bash
-export ESM_API_TOKEN="your_forge_token"
-```
-
-Add to `~/.bashrc` to persist across sessions:
-
-```bash
+# add to ~/.bashrc to persist across sessions
 echo 'export ESM_API_TOKEN="your_forge_token"' >> ~/.bashrc
+source ~/.bashrc
 ```
 
 ### Weights & Biases
@@ -147,73 +125,66 @@ echo 'export ESM_API_TOKEN="your_forge_token"' >> ~/.bashrc
 ```bash
 module load anaconda3/2024.10-1
 conda activate idl_diffusion_env
-
 wandb login                  # paste your W&B API key when prompted
 ```
 
 Or non-interactively:
 
 ```bash
-export WANDB_API_KEY="your_wandb_key"
+echo 'export WANDB_API_KEY="your_wandb_key"' >> ~/.bashrc
+source ~/.bashrc
 wandb login --relogin
 ```
 
 W&B is **disabled by default** in [`configs/psc_dispef_m.yaml`](configs/psc_dispef_m.yaml).  
-Set `wandb.enabled: true` and `wandb.entity: <your_username>` to enable it.
+Set `wandb.enabled: true` and `wandb.entity: xhu15` to enable it.
 
 ## 3 · Download DISPEF-M
 
 ```bash
-WORKSPACE="/ocean/projects/cis250233p/${USER}/esm3_gnn_distill"
-RAW="${WORKSPACE}/data/raw/dispef"
+RAW="/ocean/projects/cis250233p/xhu15/data/raw/dispef"
 
-# DISPEF-M train/test tensors + dataset helper (~3 GB total)
-wget -O "${RAW}/DISPEF_M_tr.pt" \
-  "https://zenodo.org/records/13755810/files/DISPEF_M_tr.pt"
-wget -O "${RAW}/DISPEF_M_te.pt" \
-  "https://zenodo.org/records/13755810/files/DISPEF_M_te.pt"
-wget -O "${RAW}/dataset_prep.py" \
-  "https://zenodo.org/records/13755810/files/dataset_prep.py"
+wget -O "${RAW}/DISPEF_M_tr.pt"   "https://zenodo.org/records/13755810/files/DISPEF_M_tr.pt"
+wget -O "${RAW}/DISPEF_M_te.pt"   "https://zenodo.org/records/13755810/files/DISPEF_M_te.pt"
+wget -O "${RAW}/dataset_prep.py"  "https://zenodo.org/records/13755810/files/dataset_prep.py"
 ```
 
 ## 4 · Preprocess
 
 ```bash
-WORKSPACE="/ocean/projects/cis250233p/${USER}/esm3_gnn_distill"
-cd "${WORKSPACE}/active-learning-plm-distillation"
-
+cd /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
 module load anaconda3/2024.10-1
 conda activate idl_diffusion_env
 
 # Full dataset
 python -m data.preprocess_dispef \
-  --raw-root       "${WORKSPACE}/data/raw/dispef" \
-  --processed-root "${WORKSPACE}/data/processed" \
+  --raw-root       /ocean/projects/cis250233p/xhu15/data/raw/dispef \
+  --processed-root /ocean/projects/cis250233p/xhu15/data/processed \
   --dataset-name   dispef_m \
   --val-fraction   0.1 \
   --seed           42
 
-# Or cap per split for quick testing
+# Or cap per split for quick testing (--max-files-per-split caps train and test independently)
 python -m data.preprocess_dispef \
-  --raw-root       "${WORKSPACE}/data/raw/dispef" \
-  --processed-root "${WORKSPACE}/data/processed" \
+  --raw-root       /ocean/projects/cis250233p/xhu15/data/raw/dispef \
+  --processed-root /ocean/projects/cis250233p/xhu15/data/processed \
   --dataset-name   dispef_m \
   --val-fraction   0.1 \
   --seed           42 \
   --max-files-per-split 200
 ```
 
-`--max-files-per-split N` caps train and test independently so both splits always have data.
-
 ## 5 · Generate Teacher Labels
 
 ### Option A — Mock teacher (no ESM3, for pipeline testing)
 
 ```bash
+cd /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
+
 python scripts/generate_mock_teacher.py \
-  --processed-root     "${WORKSPACE}/data/processed" \
+  --processed-root     /ocean/projects/cis250233p/xhu15/data/processed \
   --dataset-name       dispef_m \
-  --teacher-cache-root "${WORKSPACE}/cache/teacher" \
+  --teacher-cache-root /ocean/projects/cis250233p/xhu15/cache/teacher \
   --label-smoothing    0.05
 ```
 
@@ -222,50 +193,48 @@ Produces smoothed one-hot labels from DSSP. Sufficient to verify the full pipeli
 ### Option B — Real ESM3 teacher (~16 GB VRAM)
 
 ```bash
-# Local ESM3
+# Local ESM3 (submit as GPU job or run interactively on GPU node)
 python -m teacher.generate_teacher_labels \
-  --processed-root     "${WORKSPACE}/data/processed" \
+  --processed-root     /ocean/projects/cis250233p/xhu15/data/processed \
   --dataset-name       dispef_m \
-  --teacher-cache-root "${WORKSPACE}/cache/teacher" \
+  --teacher-cache-root /ocean/projects/cis250233p/xhu15/cache/teacher \
   --provider esm3 --esm-backend local --split all --device cuda
 
 # EvolutionaryScale Forge API (no local GPU needed)
-export ESM_API_TOKEN=<your_forge_token>
 python -m teacher.generate_teacher_labels \
-  --processed-root     "${WORKSPACE}/data/processed" \
+  --processed-root     /ocean/projects/cis250233p/xhu15/data/processed \
   --dataset-name       dispef_m \
-  --teacher-cache-root "${WORKSPACE}/cache/teacher" \
+  --teacher-cache-root /ocean/projects/cis250233p/xhu15/cache/teacher \
   --provider esm3 --esm-backend forge --split all
 ```
 
 ## 6 · Submit Training Job
 
 ```bash
-cd "${WORKSPACE}/active-learning-plm-distillation"
+cd /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
 sbatch psc.slurm
 ```
 
 Monitor:
 
 ```bash
-squeue -u ${USER}
-tail -f /ocean/projects/cis250233p/${USER}/esm3_gnn_distill/logs/slurm/<JOB_ID>.out
+squeue -u xhu15
+tail -f /ocean/projects/cis250233p/xhu15/logs/slurm/<JOB_ID>.out
 ```
 
 Training config: [`configs/psc_dispef_m.yaml`](configs/psc_dispef_m.yaml)  
-W&B is disabled by default; set `wandb.enabled: true` and fill in `wandb.entity` to enable.
+W&B is disabled by default; set `wandb.enabled: true` and `wandb.entity: xhu15` to enable.
 
 ## 7 · Evaluate
 
 ```bash
-WORKSPACE="/ocean/projects/cis250233p/${USER}/esm3_gnn_distill"
 RUN="psc_schake_distill_<JOB_ID>"
 
 python -m eval.evaluate \
-  --config     "${WORKSPACE}/active-learning-plm-distillation/configs/psc_dispef_m.yaml" \
-  --checkpoint "${WORKSPACE}/checkpoints/${RUN}/best.pt" \
+  --config     /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation/configs/psc_dispef_m.yaml \
+  --checkpoint /ocean/projects/cis250233p/xhu15/checkpoints/${RUN}/best.pt \
   --split      test \
-  --output-dir "${WORKSPACE}/outputs/eval/${RUN}"
+  --output-dir /ocean/projects/cis250233p/xhu15/outputs/eval/${RUN}
 ```
 
 Results in `eval_summary_test.json`:

@@ -1,11 +1,11 @@
 paths:
-  project_root: /ocean/projects/cis250233p/${USER}/esm3_gnn_distill
-  raw_dispef_root: /ocean/projects/cis250233p/${USER}/esm3_gnn_distill/data/raw/dispef
-  processed_root: /ocean/projects/cis250233p/${USER}/esm3_gnn_distill/data/processed
-  teacher_cache_root: /ocean/projects/cis250233p/${USER}/esm3_gnn_distill/cache/teacher
-  outputs_root: /ocean/projects/cis250233p/${USER}/esm3_gnn_distill/outputs
-  checkpoints_root: /ocean/projects/cis250233p/${USER}/esm3_gnn_distill/checkpoints
-  logs_root: /ocean/projects/cis250233p/${USER}/esm3_gnn_distill/logs
+  project_root: /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
+  raw_dispef_root: /ocean/projects/cis250233p/xhu15/data/raw/dispef
+  processed_root: /ocean/projects/cis250233p/xhu15/data/processed
+  teacher_cache_root: /ocean/projects/cis250233p/xhu15/cache/teacher
+  outputs_root: /ocean/projects/cis250233p/xhu15/outputs
+  checkpoints_root: /ocean/projects/cis250233p/xhu15/checkpoints
+  logs_root: /ocean/projects/cis250233p/xhu15/logs
 
 data:
   dataset_name: dispef_m
@@ -63,9 +63,6 @@ wandb:
   name: "psc_baseline"
   notes: ""
   tags: ["psc"]
-
-s3_sync:
-  enabled: false
 
 eval:
   batch_size: 16
