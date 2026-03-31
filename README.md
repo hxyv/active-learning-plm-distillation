@@ -159,27 +159,10 @@ The archive contains `DISPEF_M_tr.pt`, `DISPEF_M_te.pt`, `DISPEF_S_tr.pt`, `DISP
 
 ```bash
 cd /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
-module load anaconda3/2024.10-1
-source activate esm3_gnn_distill
-
-# DISPEF-M
-python -m data.preprocess_dispef \
-  --raw-root       /ocean/projects/cis250233p/xhu15/data/raw/dispef \
-  --processed-root /ocean/projects/cis250233p/xhu15/data/processed \
-  --dataset-name   dispef_m \
-  --val-fraction   0.1 \
-  --seed           42
-
-# DISPEF-S
-python -m data.preprocess_dispef \
-  --raw-root       /ocean/projects/cis250233p/xhu15/data/raw/dispef \
-  --processed-root /ocean/projects/cis250233p/xhu15/data/processed \
-  --dataset-name   dispef_s \
-  --val-fraction   0.1 \
-  --seed           42
+sbatch slurm/preprocess.slurm
 ```
 
-For quick pipeline testing, add `--max-files-per-split 200` to cap train and test independently.
+For quick pipeline testing, edit `slurm/preprocess.slurm` and add `--max-files-per-split 200` to each preprocess command.
 
 ## 5 · Generate Teacher Labels
 
@@ -200,14 +183,11 @@ Produces smoothed one-hot labels from DSSP. Sufficient to verify the full pipeli
 ### Option B — Real ESM3 teacher (~16 GB VRAM)
 
 ```bash
-# Local ESM3 (submit as GPU job or run interactively on GPU node)
-python -m teacher.generate_teacher_labels \
-  --processed-root     /ocean/projects/cis250233p/xhu15/data/processed \
-  --dataset-name       dispef_m \
-  --teacher-cache-root /ocean/projects/cis250233p/xhu15/cache/teacher \
-  --provider esm3 --esm-backend local --split all --device cuda
+# Default runs dispef_m; override with DATASET=dispef_s
+sbatch slurm/teacher.slurm
+sbatch --export=ALL,DATASET=dispef_s slurm/teacher.slurm
 
-# EvolutionaryScale Forge API (no local GPU needed)
+# Or via Forge API (no local GPU needed) — run interactively or wrap in a SLURM script
 python -m teacher.generate_teacher_labels \
   --processed-root     /ocean/projects/cis250233p/xhu15/data/processed \
   --dataset-name       dispef_m \
@@ -219,7 +199,7 @@ python -m teacher.generate_teacher_labels \
 
 ```bash
 cd /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
-sbatch psc.slurm
+sbatch slurm/train.slurm
 ```
 
 Monitor:
@@ -235,13 +215,8 @@ W&B is disabled by default; set `wandb.enabled: true` and `wandb.entity: xhu15` 
 ## 7 · Evaluate
 
 ```bash
-RUN="psc_schake_distill_<JOB_ID>"
-
-python -m eval.evaluate \
-  --config     /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation/configs/psc_dispef_m.yaml \
-  --checkpoint /ocean/projects/cis250233p/xhu15/checkpoints/${RUN}/best.pt \
-  --split      test \
-  --output-dir /ocean/projects/cis250233p/xhu15/outputs/eval/${RUN}
+cd /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
+sbatch --export=ALL,RUN_NAME=psc_schake_distill_<JOB_ID> slurm/eval.slurm
 ```
 
 Results in `eval_summary_test.json`:
