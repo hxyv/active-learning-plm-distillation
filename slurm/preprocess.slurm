@@ -4,7 +4,7 @@
 #SBATCH -p RM-shared
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32GB
+#SBATCH --mem=16GB
 #SBATCH -t 4:00:00
 #SBATCH -A cis250233p
 #SBATCH --output=/ocean/projects/cis250233p/xhu15/logs/slurm/%j.out
