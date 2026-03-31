@@ -180,14 +180,42 @@ python scripts/generate_mock_teacher.py \
 
 Produces smoothed one-hot labels from DSSP. Sufficient to verify the full pipeline end-to-end.
 
-### Option B — Real ESM3 teacher (~16 GB VRAM)
+### Option B — Local ESM3 teacher (~16 GB VRAM)
+
+ESM3 is run with backbone coordinates as structure input (in addition to sequence), so its SS8
+predictions are conditioned on the same conformations used to compute DSSP labels.
 
 ```bash
-# Default runs dispef_m; override with DATASET=dispef_s
+# DISPEF-M (default)
 sbatch slurm/teacher.slurm
-sbatch --export=ALL,DATASET=dispef_s slurm/teacher.slurm
 
-# Or via Forge API (no local GPU needed) — run interactively or wrap in a SLURM script
+# DISPEF-S
+sbatch --export=ALL,DATASET=dispef_s slurm/teacher.slurm
+```
+
+To speed up labeling on a large dataset, submit multiple shards in parallel — each job processes
+a non-overlapping subset:
+
+```bash
+sbatch --export=ALL,DATASET=dispef_m,NUM_SHARDS=4,SHARD_ID=0 slurm/teacher.slurm
+sbatch --export=ALL,DATASET=dispef_m,NUM_SHARDS=4,SHARD_ID=1 slurm/teacher.slurm
+sbatch --export=ALL,DATASET=dispef_m,NUM_SHARDS=4,SHARD_ID=2 slurm/teacher.slurm
+sbatch --export=ALL,DATASET=dispef_m,NUM_SHARDS=4,SHARD_ID=3 slurm/teacher.slurm
+```
+
+Smoke test (run 10 samples to verify HF auth and model loading):
+
+```bash
+sbatch --export=ALL,DATASET=dispef_m slurm/teacher.slurm
+# edit teacher.slurm temporarily to add --max-samples 10
+```
+
+Add `--overwrite` to regenerate existing cached labels.
+
+### Option C — Forge API (no local GPU needed)
+
+```bash
+# add ESM_API_TOKEN to ~/.bashrc first (see §2)
 python -m teacher.generate_teacher_labels \
   --processed-root     /ocean/projects/cis250233p/xhu15/data/processed \
   --dataset-name       dispef_m \
