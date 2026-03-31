@@ -2,6 +2,7 @@
 #SBATCH --job-name=dispef_preprocess
 #SBATCH -N 1
 #SBATCH -p GPU-shared
+#SBATCH --gpus=h100-80:1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=2000M
