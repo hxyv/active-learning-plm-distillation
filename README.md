@@ -62,7 +62,7 @@ module load anaconda3/2024.10-1
 module load cuda/12.4.0
 
 conda create -n esm3_gnn_distill python=3.10 -y
-conda activate esm3_gnn_distill
+source activate esm3_gnn_distill
 
 # PyTorch 2.4 + CUDA 12.4 (matches Bridge-2 cuda/12.4.0)
 pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu124
@@ -94,7 +94,7 @@ ESM3 is a gated model — request access at
 
 ```bash
 module load anaconda3/2024.10-1
-conda activate idl_diffusion_env
+source activate esm3_gnn_distill
 
 pip install huggingface_hub
 huggingface-cli login        # paste your HF token when prompted
@@ -124,7 +124,7 @@ source ~/.bashrc
 
 ```bash
 module load anaconda3/2024.10-1
-conda activate idl_diffusion_env
+source activate esm3_gnn_distill
 wandb login                  # paste your W&B API key when prompted
 ```
 
@@ -154,7 +154,7 @@ wget -O "${RAW}/dataset_prep.py"  "https://zenodo.org/records/13755810/files/dat
 ```bash
 cd /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
 module load anaconda3/2024.10-1
-conda activate idl_diffusion_env
+source activate esm3_gnn_distill
 
 # Full dataset
 python -m data.preprocess_dispef \

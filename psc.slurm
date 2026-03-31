@@ -17,7 +17,7 @@ mkdir -p "/ocean/projects/cis250233p/xhu15/logs/slurm"
 
 module load anaconda3/2024.10-1
 module load cuda/12.4.0
-conda activate esm3_gnn_distill
+source activate esm3_gnn_distill
 
 cd "${PROJECT_ROOT}"
 
