@@ -29,6 +29,7 @@ model:
   max_num_neigh: 10000
   num_heads: 4
   num_out_layers: 3
+  mc_dropout_p: 0.1
 
 train:
   seed: 42

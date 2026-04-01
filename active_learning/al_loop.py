@@ -31,7 +31,7 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
-from active_learning.acquisition import random_acquisition
+from active_learning.acquisition import mc_dropout_acquisition, random_acquisition
 from active_learning.pool_manager import ALPoolManager
 from train.config_utils import load_config, save_config
 from train.trainer import Trainer
@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 _STRATEGIES: Dict[str, Callable] = {
     "random": random_acquisition,
+    "mc_dropout": mc_dropout_acquisition,
 }
 
 
@@ -217,7 +218,14 @@ def run_al_loop(
                 break
             # Advance the rng deterministically per round
             round_rng = np.random.default_rng(seed + round_idx)
-            selected = acquisition_fn(pool_ids, budget_per_round, round_rng)
+            selected = acquisition_fn(
+                pool_ids,
+                budget_per_round,
+                round_rng,
+                cfg=round_cfg,
+                checkpoint_path=Path(metrics["checkpoint_path"]),
+                device=device,
+            )
             pool_manager.advance_round(selected)
 
     aggregate_results(output_dir)

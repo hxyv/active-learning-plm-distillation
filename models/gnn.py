@@ -253,6 +253,7 @@ class SchakeDistillModel(nn.Module):
         max_num_neigh: int = 10000,
         num_heads: int = 4,
         num_out_layers: int = 3,
+        mc_dropout_p: float = 0.0,
     ) -> None:
         super().__init__()
         try:
@@ -285,6 +286,15 @@ class SchakeDistillModel(nn.Module):
             device="cpu",
             single_pro=False,
         )
+
+        # Prepend a Dropout layer to the output MLP to support MC Dropout uncertainty
+        # sampling at acquisition time.  mc_dropout_p=0.0 (default) leaves out_network
+        # unchanged so the offline baseline is unaffected.
+        if mc_dropout_p > 0.0:
+            self.model.out_network = torch.nn.Sequential(
+                torch.nn.Dropout(p=mc_dropout_p),
+                *list(self.model.out_network.children()),
+            )
 
         # Atom embedding IDs expected by official Schake helpers for bb3:
         # C -> 0, CA -> 1, N -> 63.

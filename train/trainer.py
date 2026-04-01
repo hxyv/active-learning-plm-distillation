@@ -541,6 +541,7 @@ class Trainer:
             "test_teacher_kl": test_metrics["teacher_kl"],
             "test_teacher_top1_acc": test_metrics["teacher_top1_acc"],
             "test_dssp_acc": test_metrics["dssp_acc"],
+            "checkpoint_path": str(ckpt_to_eval),
         }
         self.metrics_path.write_text(json.dumps(final, indent=2))
         if self.wandb_run is not None:

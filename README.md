@@ -304,12 +304,26 @@ outputs/al/<strategy>_<JOB_ID>/
 
 ### Available strategies
 
-| Strategy | Flag | Description |
-|----------|------|-------------|
-| Random (passive) | `random` | Uniform random sampling — establishes the floor |
-| MC Dropout | `mc_dropout` | Uncertainty sampling via output-head MC Dropout |
-| EMC | `emc` | Expected Model Change via output-layer gradient norms |
-| Diversity | `diversity` | Agglomerative clustering on node embeddings |
+| Strategy | Flag | Status | Description |
+|----------|------|--------|-------------|
+| Random (passive) | `random` | ✅ implemented | Uniform random sampling — establishes the floor |
+| MC Dropout | `mc_dropout` | ✅ implemented | Mean predictive entropy over T=20 stochastic forward passes |
+| EMC | `emc` | planned | Expected Model Change via output-layer gradient norms |
+| Diversity | `diversity` | planned | Agglomerative clustering on node embeddings |
+
+### MC Dropout details
+
+The Schake v2 output MLP has no dropout by default. Setting `model.mc_dropout_p: 0.1` in the config (already set in `configs/al_psc_dispef_m.yaml`) prepends a `nn.Dropout` layer to the output network. Both training and acquisition use this layer, following Gal & Ghahramani (2016).
+
+At acquisition time the model runs in eval mode with dropout layers kept active. Uncertainty per protein is the mean per-residue predictive entropy averaged over 20 passes:
+
+$$U(p) = \frac{1}{T} \sum_{t=1}^{T} \frac{1}{L_p} \sum_{r=1}^{L_p} H\!\left(\text{softmax}(\mathbf{z}_{t,r})\right)$$
+
+To run MC Dropout acquisition:
+
+```bash
+sbatch --export=ALL,STRATEGY=mc_dropout slurm/al_loop.slurm
+```
 
 ## Model Architecture
 

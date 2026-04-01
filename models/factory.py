@@ -36,6 +36,7 @@ def build_model(cfg: dict):
             max_num_neigh=int(model_cfg.get("max_num_neigh", 10000)),
             num_heads=int(model_cfg.get("num_heads", 4)),
             num_out_layers=int(model_cfg.get("num_out_layers", 3)),
+            mc_dropout_p=float(model_cfg.get("mc_dropout_p", 0.0)),
         )
 
     raise ValueError(f"Unknown model type: {model_type}")
