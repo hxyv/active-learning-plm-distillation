@@ -109,7 +109,8 @@ class Trainer:
         dataset_name = self.cfg["data"]["dataset_name"]
         processed_root = Path(self.cfg["paths"]["processed_root"])
         teacher_root = Path(self.cfg["paths"]["teacher_cache_root"]) / dataset_name
-        split_path = processed_root / dataset_name / "splits.json"
+        splits_file_cfg = self.cfg["data"].get("splits_file")
+        split_path = Path(splits_file_cfg) if splits_file_cfg else (processed_root / dataset_name / "splits.json")
 
         if not split_path.exists():
             raise FileNotFoundError(f"Missing split file: {split_path}")
@@ -168,6 +169,8 @@ class Trainer:
 
     def _build_dataset(self, split: str) -> DistillationGraphDataset:
         cfg = self.cfg
+        splits_file_cfg = cfg["data"].get("splits_file")
+        splits_file = Path(splits_file_cfg) if splits_file_cfg else None
         return DistillationGraphDataset(
             processed_root=Path(cfg["paths"]["processed_root"]),
             dataset_name=cfg["data"]["dataset_name"],
@@ -176,6 +179,7 @@ class Trainer:
             cutoff=float(cfg["graph"].get("cutoff", 8.0)),
             max_neighbors=int(cfg["graph"].get("max_neighbors", 64)),
             cache_graphs=bool(cfg["data"].get("cache_graphs", False)),
+            splits_file=splits_file,
         )
 
     def _build_loaders(self):

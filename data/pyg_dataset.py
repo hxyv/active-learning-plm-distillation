@@ -27,6 +27,7 @@ class DistillationGraphDataset(Dataset):
         cutoff: float,
         max_neighbors: int,
         cache_graphs: bool = False,
+        splits_file: Optional[Path] = None,
     ) -> None:
         super().__init__()
         self.dataset_root = processed_root / dataset_name
@@ -37,7 +38,7 @@ class DistillationGraphDataset(Dataset):
         self.cache_graphs = cache_graphs
         self._cache: Dict[str, object] = {}
 
-        split_path = self.dataset_root / "splits.json"
+        split_path = splits_file if splits_file is not None else (self.dataset_root / "splits.json")
         if not split_path.exists():
             raise FileNotFoundError(f"Missing split file: {split_path}")
 

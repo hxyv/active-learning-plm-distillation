@@ -1,4 +1,4 @@
-# ESM3 → GNN Distillation Baseline (DISPEF-M) — PSC
+# ESM3 → GNN Distillation + Active Learning (DISPEF-M) — PSC
 
 Reproduction of the distillation stage from:
 
@@ -10,7 +10,8 @@ Implemented scope:
 
 - `sequence + structure → teacher ESM3 SS8 probabilities → student GNN`
 - student (Schake v2) trained on soft teacher targets plus DSSP auxiliary CE loss
-- paper-faithful training: 120 epochs, batch 50, Adam lr=1e-3, StepLR(γ=0.9, step=3), patience=20
+- paper-faithful offline baseline: 120 epochs, batch 50, Adam lr=1e-3, StepLR(γ=0.9, step=3), patience=20
+- **pool-based active learning loop** with passive (random), MC Dropout, EMC, and diversity strategies
 
 Not implemented:
 
@@ -22,19 +23,30 @@ Not implemented:
 ```
 /ocean/projects/cis250233p/xhu15/
 ├── active-learning-plm-distillation/   ← this repo
-│   ├── configs/psc_dispef_m.yaml
+│   ├── configs/
+│   │   ├── psc_dispef_m.yaml           ← offline baseline config
+│   │   └── al_psc_dispef_m.yaml        ← active learning config
+│   ├── active_learning/
+│   │   ├── pool_manager.py             ← pool/train split state
+│   │   ├── acquisition.py              ← acquisition functions
+│   │   └── al_loop.py                  ← AL loop CLI entry point
 │   ├── data/
 │   ├── models/
 │   ├── scripts/
 │   ├── teacher/
 │   ├── train/
 │   ├── eval/
-│   └── psc.slurm
+│   └── slurm/
+│       ├── preprocess.slurm
+│       ├── teacher.slurm
+│       ├── train.slurm                 ← offline baseline training
+│       ├── eval.slurm
+│       └── al_loop.slurm              ← active learning loop
 ├── data/raw/dispef/                    ← DISPEF-M tensors
 ├── data/processed/                     ← preprocessed NPZ files
 ├── cache/teacher/                      ← ESM3 teacher label cache
 ├── checkpoints/                        ← saved model checkpoints
-├── outputs/                            ← eval outputs
+├── outputs/                            ← eval outputs + AL round results
 └── logs/slurm/                         ← SLURM stdout/stderr
 ```
 
@@ -59,20 +71,19 @@ Run interactively on a login node (no GPU needed for env creation):
 
 ```bash
 module load anaconda3/2024.10-1
-module load cuda/12.4.0
 
 conda create -p /ocean/projects/cis250233p/xhu15/envs/esm3_gnn_distill python=3.10 -y
 conda activate /ocean/projects/cis250233p/xhu15/envs/esm3_gnn_distill
 
-# PyTorch 2.4 + CUDA 12.4 (matches Bridge-2 cuda/12.4.0)
-pip install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu124
+# PyTorch + CUDA (Bridge-2 nodes have CUDA 12.6 driver)
+pip install torch --index-url https://download.pytorch.org/whl/cu121
 
 # PyG core
 pip install torch-geometric
 
 # torch-scatter and torch-cluster (must match torch + cuda build)
 pip install torch-scatter torch-cluster \
-  -f https://data.pyg.org/whl/torch-2.4.0+cu124.html
+  -f https://data.pyg.org/whl/torch-2.6.0+cu121.html
 
 # ESM3 (EvolutionaryScale SDK — weights download automatically on first use via HuggingFace)
 pip install esm httpx
@@ -126,8 +137,7 @@ source ~/.bashrc
 wandb login --relogin
 ```
 
-W&B is **disabled by default** in [`configs/psc_dispef_m.yaml`](configs/psc_dispef_m.yaml).  
-Set `wandb.enabled: true` and `wandb.entity: xhu15` to enable it.
+W&B is **disabled by default** in the configs. Set `wandb.enabled: true` and `wandb.entity: xhu15` to enable.
 
 ## 3 · Download DISPEF
 
@@ -156,6 +166,10 @@ For quick pipeline testing, edit `slurm/preprocess.slurm` and add `--max-files-p
 
 ## 5 · Generate Teacher Labels
 
+Teacher labels must cover **all** proteins (train + val + test + pool) before running either the
+offline baseline or the active learning loop. The AL loop treats unlabeled proteins as unqueried,
+but their cached labels are required upfront to simulate the oracle.
+
 ### Option A — Mock teacher (no ESM3, for pipeline testing)
 
 ```bash
@@ -178,7 +192,6 @@ predictions are conditioned on the same conformations used to compute DSSP label
 ```bash
 # DISPEF-M (default)
 sbatch slurm/teacher.slurm
-
 ```
 
 To speed up labeling on a large dataset, submit multiple shards in parallel — each job processes
@@ -194,20 +207,22 @@ sbatch --export=ALL,DATASET=dispef_m,NUM_SHARDS=4,SHARD_ID=3 slurm/teacher.slurm
 Smoke test (run 10 samples to verify HF auth and model loading):
 
 ```bash
-sbatch --export=ALL,DATASET=dispef_m slurm/teacher.slurm
 # edit teacher.slurm temporarily to add --max-samples 10
+sbatch --export=ALL,DATASET=dispef_m slurm/teacher.slurm
 ```
 
 Add `--overwrite` to regenerate existing cached labels.
 
+## 6 · Offline Baseline Training
 
-
-## 6 · Submit Training Job
+Trains the student on the **full** labeled training set (17,280 proteins).
 
 ```bash
 cd /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
 sbatch slurm/train.slurm
 ```
+
+Config: [`configs/psc_dispef_m.yaml`](configs/psc_dispef_m.yaml)
 
 Monitor:
 
@@ -216,10 +231,7 @@ squeue -u xhu15
 tail -f /ocean/projects/cis250233p/xhu15/logs/slurm/<JOB_ID>.out
 ```
 
-Training config: [`configs/psc_dispef_m.yaml`](configs/psc_dispef_m.yaml)  
-W&B is disabled by default; set `wandb.enabled: true` and `wandb.entity: xhu15` to enable.
-
-## 7 · Evaluate
+## 7 · Evaluate Offline Baseline
 
 ```bash
 cd /ocean/projects/cis250233p/xhu15/active-learning-plm-distillation
@@ -234,6 +246,70 @@ Results in `eval_summary_test.json`:
 | `teacher_kl` | KL divergence vs teacher |
 | `teacher_top1_acc` | Top-1 accuracy vs teacher argmax |
 | `dssp_acc` | Accuracy vs DSSP hard labels |
+
+## 8 · Active Learning Loop
+
+The AL loop retrains the student from scratch each round on a growing labeled subset, using a
+chosen acquisition strategy to select which proteins to query next.
+
+### Setup
+
+| Parameter | Value |
+|-----------|-------|
+| Candidate pool | first 12,000 training proteins |
+| Initial labeled set | 2,500 (random) |
+| Budget per round | 500 |
+| Total rounds | 15 |
+| Final labeled set | 10,000 |
+
+Config: [`configs/al_psc_dispef_m.yaml`](configs/al_psc_dispef_m.yaml)
+
+Per-round splits files and state are stored under the run's output directory; the original
+`splits.json` is never modified, so the offline baseline can always be re-run.
+
+### Passive baseline (random acquisition)
+
+```bash
+sbatch slurm/al_loop.slurm
+# or explicitly:
+sbatch --export=ALL,STRATEGY=random slurm/al_loop.slurm
+```
+
+### Resume an interrupted run
+
+```bash
+sbatch --export=ALL,STRATEGY=random,RESUME=1,RESUME_OUTPUT_DIR=/path/to/existing/run slurm/al_loop.slurm
+```
+
+### Output structure
+
+```
+outputs/al/<strategy>_<JOB_ID>/
+├── al_state.json             ← pool/train state (updated each round)
+├── al_results.json           ← aggregated per-round metrics for plotting
+├── al_loop.log
+├── splits/
+│   ├── splits_round_00.json
+│   ├── splits_round_01.json
+│   └── ...
+├── round_00/
+│   ├── config_resolved.yaml
+│   ├── train.log
+│   ├── history.csv
+│   ├── metrics_final.json
+│   └── round_summary.json
+└── round_01/
+    └── ...
+```
+
+### Available strategies
+
+| Strategy | Flag | Description |
+|----------|------|-------------|
+| Random (passive) | `random` | Uniform random sampling — establishes the floor |
+| MC Dropout | `mc_dropout` | Uncertainty sampling via output-head MC Dropout |
+| EMC | `emc` | Expected Model Change via output-layer gradient norms |
+| Diversity | `diversity` | Agglomerative clustering on node embeddings |
 
 ## Model Architecture
 
