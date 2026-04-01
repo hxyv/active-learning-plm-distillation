@@ -57,7 +57,7 @@ train:
   resume_checkpoint: ""
 
 wandb:
-  enabled: false
+  enabled: true
   entity: ""
   project: "pLM_KD"
   name: "psc_baseline"
