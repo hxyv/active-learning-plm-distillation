@@ -16,7 +16,6 @@ mkdir -p "/ocean/projects/cis250233p/xhu15/logs/slurm"
 # Store HF model weights on ocean (not ~/.cache which has limited quota on PSC)
 export HF_HOME="/ocean/projects/cis250233p/xhu15/cache/huggingface"
 export HUGGINGFACE_HUB_CACHE="${HF_HOME}/hub"
-export TRANSFORMERS_CACHE="${HF_HOME}/transformers"
 
 module load anaconda3/2024.10-1
 conda activate /ocean/projects/cis250233p/xhu15/envs/esm3_gnn_distill
