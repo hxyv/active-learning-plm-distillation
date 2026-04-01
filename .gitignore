@@ -25,6 +25,10 @@ outputs/
 logs/
 wandb/
 
+# Report drafts
+reprot.txt
+report.txt
+
 # OS
 .DS_Store
 Thumbs.db
