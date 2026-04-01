@@ -75,7 +75,7 @@ pip install torch-scatter torch-cluster \
   -f https://data.pyg.org/whl/torch-2.4.0+cu124.html
 
 # ESM3 (EvolutionaryScale SDK — weights download automatically on first use via HuggingFace)
-pip install esm
+pip install esm httpx
 
 # other dependencies
 pip install mdtraj biopython pyyaml tqdm scikit-learn matplotlib requests wandb
