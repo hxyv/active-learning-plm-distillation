@@ -4,7 +4,7 @@
 #SBATCH -p GPU-shared
 #SBATCH --gpus=h100-80:1
 #SBATCH --cpus-per-task=8
-#SBATCH -t 3-00:00:00
+#SBATCH -t 1-00:00:00
 #SBATCH -A cis250233p
 #SBATCH --output=/ocean/projects/cis250233p/xhu15/logs/slurm/%j.out
 #SBATCH --error=/ocean/projects/cis250233p/xhu15/logs/slurm/%j.err
