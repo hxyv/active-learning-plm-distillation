@@ -11,17 +11,19 @@ Single strategy::
 Multiple strategies (learning curve comparison)::
 
     python scripts/plot_al_results.py \\
-        --results outputs/al/random_12345/al_results.json \\
-                  outputs/al/mc_dropout_67890/al_results.json \\
+        --results /ocean/projects/cis250233p/xhu15/outputs/al/random_12345/al_results.json \\
+                  /ocean/projects/cis250233p/xhu15/outputs/al/mc_dropout_67890/al_results.json \\
         --labels random mc_dropout \\
-        --output-dir outputs/plots
+        --output-dir /ocean/projects/cis250233p/xhu15/outputs/plots
 
 SS8 composition of acquired proteins (one strategy)::
 
     python scripts/plot_al_results.py \\
-        --results outputs/al/mc_dropout_67890/al_results.json \\
-        --label mc_dropout \\
+        --results /ocean/projects/cis250233p/xhu15/outputs/al/mc_dropout_67890/al_results.json \\
+        --labels mc_dropout \\
         --composition
+
+If --output-dir is omitted, plots are saved next to the first results file.
 """
 
 from __future__ import annotations
@@ -185,8 +187,8 @@ def parse_args() -> argparse.Namespace:
         help="Strategy labels (same order as --results). Defaults to file parent dir name.",
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=Path("outputs/plots"),
-        help="Directory to write plots (default: outputs/plots)",
+        "--output-dir", type=Path, default=None,
+        help="Directory to write plots. Defaults to the parent directory of the first results file.",
     )
     parser.add_argument(
         "--composition", action="store_true",
@@ -204,7 +206,10 @@ def main() -> None:
     if len(labels) != len(args.results):
         raise ValueError("--labels must have the same number of entries as --results")
 
+    if args.output_dir is None:
+        args.output_dir = args.results[0].parent.parent / "plots"
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Saving plots to: {args.output_dir}")
 
     results_list = [load_results(p) for p in args.results]
 
