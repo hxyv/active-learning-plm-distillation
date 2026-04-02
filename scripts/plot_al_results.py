@@ -28,7 +28,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+# Ensure project root is on sys.path when run as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
