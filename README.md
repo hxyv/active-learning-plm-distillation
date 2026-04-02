@@ -287,7 +287,7 @@ sbatch --export=ALL,STRATEGY=random,RESUME=1,RESUME_OUTPUT_DIR=/path/to/existing
 outputs/al/<strategy>_<JOB_ID>/
 ├── al_state.json             ← pool/train state (updated each round)
 ├── al_results.json           ← aggregated per-round metrics for plotting
-├── al_loop.log
+├── al_loop.log               ← per-round table: labeled | acc | CE | SS8 composition
 ├── splits/
 │   ├── splits_round_00.json
 │   ├── splits_round_01.json
@@ -297,9 +297,32 @@ outputs/al/<strategy>_<JOB_ID>/
 │   ├── train.log
 │   ├── history.csv
 │   ├── metrics_final.json
-│   └── round_summary.json
+│   └── round_summary.json   ← includes selected_ss8_composition
 └── round_01/
     └── ...
+```
+
+### Visualisation
+
+After one or more runs complete, generate plots with:
+
+```bash
+python scripts/plot_al_results.py \
+    --results outputs/al/random_<ID>/al_results.json \
+              outputs/al/mc_dropout_<ID>/al_results.json \
+    --labels random mc_dropout \
+    --composition \
+    --output-dir outputs/plots
+```
+
+Produces:
+- `al_learning_curves.png` — test accuracy and CE vs. labeled set size, one line per strategy
+- `al_ss8_composition_<strategy>.png` — stacked bar chart of the 8 DSSP class fractions of acquired proteins per round (requires `--composition`)
+
+The log also prints a compact table per round:
+```
+Round 03 | labeled=3000 | test_acc=0.7124 | test_ce=0.8431
+  acquired SS8 composition: G:0.04  H:0.32  I:0.01  T:0.12  E:0.18  B:0.02  S:0.09  C:0.22
 ```
 
 ### Available strategies
