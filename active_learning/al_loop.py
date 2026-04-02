@@ -188,6 +188,11 @@ def run_al_loop(
         round_cfg = copy.deepcopy(cfg)
         round_cfg["data"]["splits_file"] = str(pool_manager.get_current_splits_file(round_idx))
         round_cfg["train"]["resume_checkpoint"] = ""  # always train from scratch
+        # Namespace checkpoints under the AL run directory so rounds from
+        # different runs don't collide (trainer uses checkpoints_root/run_dir.name).
+        round_cfg["paths"]["checkpoints_root"] = str(
+            Path(cfg["paths"]["checkpoints_root"]) / run_name
+        )
 
         # Create run directory for this round
         round_run_name = f"{run_name}_round{round_idx:02d}"
