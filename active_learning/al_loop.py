@@ -33,6 +33,7 @@ import numpy as np
 
 from active_learning.acquisition import mc_dropout_acquisition, random_acquisition
 from active_learning.pool_manager import ALPoolManager
+from active_learning.protein_meta import ss8_composition_of_selected
 from train.config_utils import load_config, save_config
 from train.trainer import Trainer
 from train.utils import infer_device, make_run_dir, set_seed, setup_logging
@@ -95,13 +96,20 @@ def save_round_summary(
     round_idx: int,
     metrics: Dict,
     pool_manager: ALPoolManager,
+    selected_ids: Optional[List[str]] = None,
+    processed_root: Optional[Path] = None,
+    dataset_name: Optional[str] = None,
 ) -> None:
-    summary = {
+    summary: Dict = {
         "round": round_idx,
         "num_train": len(pool_manager.get_train_ids()),
         "num_pool": len(pool_manager.get_pool_ids()),
         "metrics": metrics,
     }
+    if selected_ids and processed_root and dataset_name:
+        summary["selected_ss8_composition"] = ss8_composition_of_selected(
+            selected_ids, processed_root, dataset_name
+        )
     path = output_dir / f"round_{round_idx:02d}" / "round_summary.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, indent=2))
@@ -208,13 +216,13 @@ def run_al_loop(
             if wandb_run is not None:
                 wandb_run.finish()
 
-        save_round_summary(output_dir, round_idx, metrics, pool_manager)
-
         # Acquire next batch (not needed after the last round)
+        selected: List[str] = []
         if round_idx < num_rounds:
             pool_ids = pool_manager.get_pool_ids()
             if not pool_ids:
                 logger.warning("Pool is empty after round %d; stopping early.", round_idx)
+                save_round_summary(output_dir, round_idx, metrics, pool_manager)
                 break
             # Advance the rng deterministically per round
             round_rng = np.random.default_rng(seed + round_idx)
@@ -227,6 +235,26 @@ def run_al_loop(
                 device=device,
             )
             pool_manager.advance_round(selected)
+
+        save_round_summary(
+            output_dir, round_idx, metrics, pool_manager,
+            selected_ids=selected if selected else None,
+            processed_root=processed_root,
+            dataset_name=dataset_name,
+        )
+
+        # Print compact round summary
+        acc = metrics.get("test_teacher_top1_acc", float("nan"))
+        ce = metrics.get("test_teacher_ce", float("nan"))
+        logger.info(
+            "Round %02d | labeled=%d | test_acc=%.4f | test_ce=%.4f",
+            round_idx, len(pool_manager.get_train_ids()), acc, ce,
+        )
+        if selected:
+            from active_learning.protein_meta import ss8_composition_of_selected
+            comp = ss8_composition_of_selected(selected, processed_root, dataset_name)
+            comp_str = "  ".join(f"{cls}:{v:.2f}" for cls, v in comp.items())
+            logger.info("  acquired SS8 composition: %s", comp_str)
 
     aggregate_results(output_dir)
     logger.info("AL loop complete.")
