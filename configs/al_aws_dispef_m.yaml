@@ -86,7 +86,7 @@ train:
   resume_checkpoint: ""
 
 active_learning:
-  strategy: random          # passive learning baseline
+  strategy: emc          # passive learning baseline
   pool_size: 12000          # first 12k training IDs form the candidate pool
   initial_train_size: 2500  # labeled set at round 0
   budget_per_round: 500     # proteins acquired per round
@@ -102,7 +102,7 @@ wandb:
   # <<< EDIT optional — run name shown in W&B
   name: "aws_al_passive"
   notes: ""
-  tags: ["aws", "active_learning", "passive"]
+  tags: ["aws", "active_learning", "emc"]
 
 eval:
   batch_size: 48
