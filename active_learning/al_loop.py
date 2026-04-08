@@ -10,6 +10,31 @@ Passive (random) baseline::
         --output-dir /path/to/outputs/al/passive_run1 \\
         --run-name psc_al_passive
 
+Expected model change (EMC; uses the same loop as random/mc_dropout)::
+
+    python -m active_learning.al_loop \\
+        --config configs/al_psc_dispef_m.yaml \\
+        --strategy emc \\
+        --output-dir /path/to/outputs/al/emc_run1 \\
+        --run-name psc_al_emc
+
+Diversity (agglomerative clustering on graph-level embeddings from the AL candidate pool)::
+
+    python -m active_learning.al_loop \\
+        --config configs/al_psc_dispef_m.yaml \\
+        --strategy diversity \\
+        --output-dir /path/to/outputs/al/div_run1 \\
+        --run-name psc_al_div
+
+Diversity with propagated node features before pooling (optional flag)::
+
+    python -m active_learning.al_loop \\
+        --config configs/al_psc_dispef_m.yaml \\
+        --strategy diversity \\
+        --output-dir /path/to/outputs/al/div_prop_run1 \\
+        --run-name psc_al_div_prop \\
+        --Use_propagation
+
 Resume an interrupted run::
 
     python -m active_learning.al_loop \\
@@ -38,6 +63,14 @@ from train.config_utils import load_config, save_config
 from train.trainer import Trainer
 from train.utils import infer_device, make_run_dir, set_seed, setup_logging
 
+from active_learning.acquisition import (
+    diversity_acquisition,
+    emc_acquisition,
+    get_original_node_features,
+    propagate_graph_embeddings_all,
+)
+from data.pyg_dataset import DistillationGraphDataset
+
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------
@@ -47,6 +80,8 @@ logger = logging.getLogger(__name__)
 _STRATEGIES: Dict[str, Callable] = {
     "random": random_acquisition,
     "mc_dropout": mc_dropout_acquisition,
+    "emc": emc_acquisition,
+    "diversity": diversity_acquisition,
 }
 
 
@@ -264,6 +299,175 @@ def run_al_loop(
     aggregate_results(output_dir)
     logger.info("AL loop complete.")
 
+def run_al_loop_diversity(
+    cfg: dict,
+    strategy: str,
+    output_dir: Path,
+    run_name: str,
+    resume: bool,
+    Use_propagation: bool = False,
+) -> None:
+    al_cfg = cfg.get("active_learning", {})
+    pool_size = int(al_cfg.get("pool_size", 12000))
+    initial_train_size = int(al_cfg.get("initial_train_size", 2500))
+    budget_per_round = int(al_cfg.get("budget_per_round", 500))
+    num_rounds = int(al_cfg.get("num_rounds", 15))
+    seed = int(al_cfg.get("seed", cfg["train"].get("seed", 42)))
+
+    dataset_name = cfg["data"]["dataset_name"]
+    processed_root = Path(cfg["paths"]["processed_root"])
+
+    pool_manager = ALPoolManager(
+        processed_root=processed_root,
+        dataset_name=dataset_name,
+        al_output_dir=output_dir,
+        pool_size=pool_size,
+        initial_train_size=initial_train_size,
+        budget_per_round=budget_per_round,
+        seed=seed,
+    )
+
+    if not pool_manager.initialized:
+        pool_manager.initialize()
+    elif not resume:
+        raise RuntimeError(
+            f"Output directory {output_dir} already contains an AL state. "
+            "Pass --resume to continue, or choose a different --output-dir."
+        )
+
+    graph_embedding_by_id: Optional[Dict[str, np.ndarray]] = None
+    if strategy == "diversity":
+        original_splits_path = processed_root / dataset_name / "splits.json"
+        splits_json = json.loads(original_splits_path.read_text())
+        all_train_ids = sorted(splits_json.get("train", []))
+        pool_candidates = all_train_ids[:pool_size]
+
+        cand_splits_path = output_dir / "_diversity_pool_candidates_splits.json"
+        cand_splits_path.parent.mkdir(parents=True, exist_ok=True)
+        cand_splits_path.write_text(json.dumps({"pool_candidates": pool_candidates}))
+
+        div_ds = DistillationGraphDataset(
+            processed_root=processed_root,
+            dataset_name=dataset_name,
+            split_name="pool_candidates",
+            teacher_root=None,
+            cutoff=float(cfg["graph"].get("cutoff", 8.0)),
+            max_neighbors=int(cfg["graph"].get("max_neighbors", 64)),
+            cache_graphs=False,
+            splits_file=cand_splits_path,
+        )
+
+        if Use_propagation:
+            per_graph = propagate_graph_embeddings_all(div_ds)
+        else:
+            per_graph = get_original_node_features(div_ds)
+
+        graph_embedding_by_id = {
+            sid: emb.mean(axis=0).astype(np.float32)
+            for sid, emb in zip(div_ds.sample_ids, per_graph)
+        }
+
+    acquisition_fn = get_acquisition_fn(strategy)
+    # Use a separate RNG seeded per-round for reproducible acquisition
+    base_rng = np.random.default_rng(seed)
+
+    device = infer_device(cfg["train"].get("device", "auto"))
+
+    # Determine which rounds are already completed
+    start_round = pool_manager.current_round
+    logger.info(
+        "Starting AL loop: strategy=%s, rounds=%d, resume_from_round=%d",
+        strategy, num_rounds, start_round,
+    )
+
+    for round_idx in range(start_round, num_rounds + 1):
+        logger.info("--- Round %d / %d ---", round_idx, num_rounds)
+        logger.info(
+            "  train=%d  pool=%d",
+            len(pool_manager.get_train_ids()),
+            len(pool_manager.get_pool_ids()),
+        )
+
+        # Build round-specific config: deep copy + override splits_file
+        round_cfg = copy.deepcopy(cfg)
+        round_cfg["data"]["splits_file"] = str(pool_manager.get_current_splits_file(round_idx))
+        round_cfg["train"]["resume_checkpoint"] = ""  # always train from scratch
+        # Namespace checkpoints under the AL run directory so rounds from
+        # different runs don't collide (trainer uses checkpoints_root/run_dir.name).
+        round_cfg["paths"]["checkpoints_root"] = str(
+            Path(cfg["paths"]["checkpoints_root"]) / run_name
+        )
+
+        # Create run directory for this round
+        round_run_name = f"{run_name}_round{round_idx:02d}"
+        round_run_dir = output_dir / f"round_{round_idx:02d}"
+        round_run_dir.mkdir(parents=True, exist_ok=True)
+        round_logger = setup_logging(round_run_dir / "train.log")
+        save_config(round_cfg, round_run_dir / "config_resolved.yaml")
+
+        set_seed(seed + round_idx)
+
+        # Override wandb run name per round
+        if round_cfg.get("wandb", {}).get("enabled", False):
+            round_cfg["wandb"]["name"] = round_run_name
+
+        wandb_run = maybe_init_wandb(round_cfg, round_run_name, round_run_dir, round_logger)
+        try:
+            trainer = Trainer(
+                cfg=round_cfg,
+                run_dir=round_run_dir,
+                logger=round_logger,
+                device=device,
+                wandb_run=wandb_run,
+            )
+            metrics = trainer.fit()
+        finally:
+            if wandb_run is not None:
+                wandb_run.finish()
+
+        # Acquire next batch (not needed after the last round)
+        selected: List[str] = []
+        if round_idx < num_rounds:
+            pool_ids = pool_manager.get_pool_ids()
+            if not pool_ids:
+                logger.warning("Pool is empty after round %d; stopping early.", round_idx)
+                save_round_summary(output_dir, round_idx, metrics, pool_manager)
+                break
+            # Advance the rng deterministically per round
+            round_rng = np.random.default_rng(seed + round_idx)
+            selected = acquisition_fn(
+                pool_ids,
+                budget_per_round,
+                round_rng,
+                cfg=round_cfg,
+                checkpoint_path=Path(metrics["checkpoint_path"]),
+                device=device,
+                graph_embedding_by_id=graph_embedding_by_id,
+            )
+            pool_manager.advance_round(selected)
+
+        save_round_summary(
+            output_dir, round_idx, metrics, pool_manager,
+            selected_ids=selected if selected else None,
+            processed_root=processed_root,
+            dataset_name=dataset_name,
+        )
+
+        # Print compact round summary
+        acc = metrics.get("test_teacher_top1_acc", float("nan"))
+        ce = metrics.get("test_teacher_ce", float("nan"))
+        logger.info(
+            "Round %02d | labeled=%d | test_acc=%.4f | test_ce=%.4f",
+            round_idx, len(pool_manager.get_train_ids()), acc, ce,
+        )
+        if selected:
+            from active_learning.protein_meta import ss8_composition_of_selected
+            comp = ss8_composition_of_selected(selected, processed_root, dataset_name)
+            comp_str = "  ".join(f"{cls}:{v:.2f}" for cls, v in comp.items())
+            logger.info("  acquired SS8 composition: %s", comp_str)
+
+    aggregate_results(output_dir)
+    logger.info("AL loop complete.")
 
 # ------------------------------------------------------------------
 # CLI
@@ -286,6 +490,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Resume an existing AL run from the last completed round",
     )
+    parser.add_argument(
+        "--Use_propagation",
+        action="store_true",
+        default=False,
+        help="Use propagation to get node embeddings",
+    )
     return parser.parse_args()
 
 
@@ -300,13 +510,24 @@ def main() -> None:
     root_logger.info("Strategy: %s", args.strategy)
     root_logger.info("Output dir: %s", args.output_dir)
 
-    run_al_loop(
-        cfg=cfg,
-        strategy=args.strategy,
-        output_dir=args.output_dir,
-        run_name=args.run_name,
-        resume=args.resume,
-    )
+    if args.strategy == "diversity":
+        run_al_loop_diversity(
+            cfg=cfg,
+            strategy=args.strategy,
+            output_dir=args.output_dir,
+            run_name=args.run_name,
+            resume=args.resume,
+            Use_propagation=args.Use_propagation, # default is False
+        )
+    else:
+        run_al_loop(
+          cfg=cfg,
+          strategy=args.strategy,
+          output_dir=args.output_dir,
+          run_name=args.run_name,
+          resume=args.resume,
+        )
+    
 
 
 if __name__ == "__main__":
