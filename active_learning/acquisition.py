@@ -163,10 +163,18 @@ def emc_acquisition(pool_ids: List[str], budget: int, rng: np.random.Generator, 
     Per graph (protein), pools node-level SS8 logits, sums class-weighted
     ``||∂CE/∂W||`` on ``model.model.out_network[-1]`` (mean over nodes), then ranks graphs.
 
+    If ``cfg['active_learning']['emc_max_pool_graphs']`` is a positive integer smaller than the
+    pool, a **random subset** of that size is scored each round (much faster, not equivalent to
+    full-pool EMC).
+
+    If ``cfg['active_learning']['emc_max_nodes_per_graph']`` is a positive integer smaller than a
+    graph's node count, EMC uses a **random subset of nodes** inside that graph (sample mean of
+    the same per-node statistic; faster, approximate).
+
     Args:
         pool_ids:        IDs of all currently unlabeled pool proteins.
         budget:          Number of proteins to select.
-        rng:             Seeded numpy Generator (unused; kept for uniform call site).
+        rng:             Seeded numpy Generator (used for optional EMC pool subsampling).
         cfg:             Round config dict (must have ``data.splits_file`` set).
         checkpoint_path: Path to the best model checkpoint (.pt) from this round.
         device:          Torch device for inference.
@@ -177,6 +185,7 @@ def emc_acquisition(pool_ids: List[str], budget: int, rng: np.random.Generator, 
     """
     import torch
     import torch.nn.functional as F
+    from torch.utils.data import Subset
     from torch_geometric.loader import DataLoader
 
     from data.pyg_dataset import DistillationGraphDataset
@@ -201,8 +210,35 @@ def emc_acquisition(pool_ids: List[str], budget: int, rng: np.random.Generator, 
         splits_file=Path(splits_file_cfg),
     )
 
+    al_cfg = cfg.get("active_learning", {})
+    emc_nodes_cap_raw = al_cfg.get("emc_max_nodes_per_graph")
+    emc_cap_raw = al_cfg.get("emc_max_pool_graphs")
+    n_pool = len(pool_dataset)
+    parent_indices: List[int]
+    if emc_cap_raw is not None and int(emc_cap_raw) > 0 and int(emc_cap_raw) < n_pool:
+        cap = int(emc_cap_raw)
+        parent_indices = sorted(rng.choice(n_pool, size=cap, replace=False).tolist())
+        logger.info(
+            "EMC: scoring %d of %d pool graphs (active_learning.emc_max_pool_graphs=%d)",
+            len(parent_indices),
+            n_pool,
+            cap,
+        )
+        loader_dataset: Union[DistillationGraphDataset, Subset] = Subset(pool_dataset, parent_indices)
+    else:
+        parent_indices = list(range(n_pool))
+        loader_dataset = pool_dataset
+
+    if budget > len(parent_indices):
+        logger.warning(
+            "EMC: budget=%d exceeds scored pool size=%d; selecting %d this round",
+            budget,
+            len(parent_indices),
+            len(parent_indices),
+        )
+
     batch_size = int(cfg.get("eval", {}).get("batch_size", 48))
-    pool_loader = DataLoader(pool_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    pool_loader = DataLoader(loader_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
     model = build_model(cfg)
     ckpt = torch.load(checkpoint_path, map_location=device)
@@ -229,10 +265,20 @@ def emc_acquisition(pool_ids: List[str], budget: int, rng: np.random.Generator, 
             if n_nodes == 0:
                 continue
 
-            pid = pool_dataset.sample_ids[graph_idx + gi]
+            pid = pool_dataset.sample_ids[parent_indices[graph_idx + gi]]
             graph_emc = 0.0
 
-            for ni in range(n_nodes):
+            if (
+                emc_nodes_cap_raw is not None
+                and int(emc_nodes_cap_raw) > 0
+                and int(emc_nodes_cap_raw) < n_nodes
+            ):
+                k_nodes = int(emc_nodes_cap_raw)
+                node_iter = rng.choice(n_nodes, size=k_nodes, replace=False).tolist()
+            else:
+                node_iter = list(range(n_nodes))
+
+            for ni in node_iter:
                 logits_row = node_logits[ni : ni + 1]
                 p_row = node_probs[ni]
                 for j in range(num_classes):
@@ -245,7 +291,8 @@ def emc_acquisition(pool_ids: List[str], budget: int, rng: np.random.Generator, 
                     gn = float(grad.norm().item()) if grad is not None else 0.0
                     graph_emc += p_row[j].item() * gn
 
-            emc_by_id[pid] = graph_emc / n_nodes
+            denom = max(1, len(node_iter))
+            emc_by_id[pid] = graph_emc / denom
 
         graph_idx += batch.num_graphs
 
@@ -302,8 +349,8 @@ def propagate_graph_embeddings_for_one_graph(dataset: DistillationGraphDataset, 
     # identity matrix
     I = sp.eye(A.shape[0], dtype=A.dtype)
 
-    # diagonal degree matrix of A
-    D = sp.diags(np.asarray(A.sum(axis=1)).flatten(), [0])
+    # diagonal degree matrix of A (SciPy >=1.11: use offsets=0, not diags(vec, [0]))
+    D = sp.diags(np.asarray(A.sum(axis=1)).ravel(), offsets=0)
 
     # normalized adjacency matrix S = (I + D)^(-1/2) (A + I) (I + D)^(-1/2)
     d_inv_sqrt = np.power(np.asarray((D + I).diagonal()).flatten(), -0.5)

@@ -11,10 +11,10 @@ conda env remove -p "${ENV_PREFIX}" -y >/dev/null 2>&1 || true
 conda env create -p "${ENV_PREFIX}" -f "${PROJECT_ROOT}/envs/environment.yml"
 conda activate "${ENV_PREFIX}"
 
-# PyTorch + CUDA wheels (A10G-compatible) and PyG dependencies.
+# PyTorch + CUDA wheels and PyG. Pin torch so PyG extension wheels match (pt23 vs pt25 ABI).
 pip install --upgrade pip
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-pip install pyg-lib torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.3.1+cu121.html
+pip install torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install pyg-lib torch-scatter torch-sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
 pip install torch-geometric
 
 echo "Environment ready at: ${ENV_PREFIX}"

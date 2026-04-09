@@ -1,22 +1,13 @@
 # =============================================================================
-# TO DO — fill in / verify before running (mark done in your editor as you go)
+# Same layout as al_aws_dispef_m.yaml; use with --strategy diversity and without
+# --Use_propagation (no graph embedding propagation — mean-pooled raw node features).
 #
-#   [ ] paths.project_root          — absolute path to this git repo on the instance
-#   [ ] paths.raw_dispef_root       — raw DISPEF tensors (preprocess only; ok if empty until needed)
-#   [ ] paths.processed_root        — parent of dispef_m/ (must hold dispef_m/splits.json + npz)
-#   [ ] paths.teacher_cache_root    — ESM3 teacher outputs (generate_teacher_labels or S3 sync)
-#   [ ] paths.outputs_root          — AL + run outputs
-#   [ ] paths.checkpoints_root      — saved model checkpoints
-#   [ ] paths.logs_root             — training / slurm-style logs if used
-#   [ ] wandb.enabled               — false if not using Weights & Biases
-#   [ ] wandb.entity                — your W&B username or team (if enabled)
-#   [ ] wandb.name / tags           — optional labels for the run
-#   [ ] train.num_workers           — optional: lower on small CPUs if DataLoader struggles
+# Run (full): python -m active_learning.al_loop --config configs/al_aws_diversity_dispef_m.yaml --strategy diversity
+# Or:       ./scripts/run_al_diversity_aws.sh
+# Test first: ./scripts/run_al_diversity_aws_smoke.sh (no propagation)
+#             ./scripts/run_al_diversity_aws_smoke_prop.sh (with --Use_propagation)
 #
-# processed_root hint: if S3 layout is .../data_processed/data_processed/dispef_m/,
-#   set processed_root to .../data_processed/data_processed (not .../data_processed).
-#
-# Run: python -m active_learning.al_loop --config configs/al_aws_dispef_m.yaml ...
+# EMC-only keys below are ignored for diversity but kept so this file stays in sync with al_aws_dispef_m.yaml.
 # =============================================================================
 
 paths:
@@ -64,6 +55,7 @@ train:
   epochs: 120
   # 32 was safe on ~22GB; 150 OOM'd. 48 is a middle step — if OOM, set back to 32; if stable, try 64.
   batch_size: 48
+  # More workers → faster dataloading when CPU has headroom (does not fix GPU OOM).
   num_workers: 6
   mixed_precision: true
   multi_gpu: false
@@ -86,18 +78,13 @@ train:
   resume_checkpoint: ""
 
 active_learning:
-  # Full-pool, all-node EMC is very slow. Approximate EMC options:
-  #   emc_max_pool_graphs — max proteins randomly drawn from the pool to score per round (budget can be smaller).
-  #   emc_max_nodes_per_graph — max nodes randomly drawn per graph for the inner EMC sum (sample mean).
-  # Or use strategy random / mc_dropout for cheap acquisition.
-  strategy: emc
+  # Ignored by CLI if you pass --strategy diversity; documented for parity with al_aws_dispef_m.yaml.
+  strategy: diversity
   pool_size: 12000          # first pool_size train IDs from splits.json form the AL candidate universe
   initial_train_size: 2500  # labeled at round 0 (random subset of that universe)
   budget_per_round: 500
-  # At most this many pool graphs scored per EMC round; top `budget_per_round` become labels (need budget <= cap).
-  emc_max_pool_graphs: 700
-  # null = use all nodes per graph. Integer = random node subset; EMC score is mean over sampled nodes only.
-  emc_max_nodes_per_graph: 32
+  # EMC-only (no effect when using diversity acquisition):
+
   # num_rounds = number of acquisition steps. Training runs for round indices 0..num_rounds (num_rounds+1 fits).
   # Need: pool_size - initial_train_size >= num_rounds * budget_per_round  (else pool empties early).
   num_rounds: 15
@@ -110,9 +97,9 @@ wandb:
   entity: ""
   project: "pLM_KD"
   # <<< EDIT optional — run name shown in W&B
-  name: "aws_al_emc"
+  name: "aws_al_diversity"
   notes: ""
-  tags: ["aws", "active_learning", "emc"]
+  tags: ["aws", "active_learning", "diversity", "no_propagation"]
 
 eval:
   batch_size: 24
