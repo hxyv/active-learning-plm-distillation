@@ -5,7 +5,7 @@ Current implementations
 random_acquisition      -- passive baseline (uniform random sampling)
 mc_dropout_acquisition  -- MC Dropout uncertainty sampling on output MLP head
 
-emc_acquisition         -- Expected Model Change via output-layer gradient norms
+emc_acquisition         -- Expected Model Change (analytic ||∂CE/∂W_last||, no GNN backward)
 diversity_acquisition   -- Agglomerative clustering on graph-level embeddings (pool candidates)
 """
 
@@ -23,6 +23,30 @@ from torch_geometric.data import Data
 from data.pyg_dataset import DistillationGraphDataset
 
 logger = logging.getLogger(__name__)
+
+
+def _emc_node_score_last_linear(h: "torch.Tensor", probs: "torch.Tensor") -> float:
+    """EMC contribution for one node using only the last ``nn.Linear`` head.
+
+    Matches ``sum_j p_j * ||∂ CE(z, class=j) / ∂W||_F`` with CE on one row, where ``z = h W^T + b``
+    and ``p = softmax(z)``.  Uses ``||∂L/∂W||_F = ||∂L/∂z||_2 * ||h||_2`` (outer-product gradient).
+
+    Args:
+        h:    Last-layer input for that node, shape ``[in_features]``.
+        probs: Class probabilities (softmax of logits), shape ``[num_classes]``.
+
+    Returns:
+        Scalar expected gradient-norm score for that node.
+    """
+    import torch
+
+    p = probs.float()
+    hv = h.float()
+    h_norm = torch.linalg.vector_norm(hv)
+    sq_p = (p * p).sum()
+    # ||softmax - e_j||_2 for each j
+    diff_norms = torch.sqrt(sq_p + 1.0 - 2.0 * p)
+    return float((h_norm * p * diff_norms).sum().item())
 
 
 def random_acquisition(pool_ids: List[str], budget: int, rng: np.random.Generator, **kwargs) -> List[str]:
@@ -160,8 +184,10 @@ def mc_dropout_acquisition(
 def emc_acquisition(pool_ids: List[str], budget: int, rng: np.random.Generator, cfg: dict, checkpoint_path: Path, device, **kwargs) -> List[str]:
     """Select proteins with the highest expected model change.
 
-    Per graph (protein), pools node-level SS8 logits, sums class-weighted
-    ``||∂CE/∂W||`` on ``model.model.out_network[-1]`` (mean over nodes), then ranks graphs.
+    Per graph (protein), pools node-level scores: class-weighted Frobenius norms of
+    ``∂CE/∂W`` for the **final** ``nn.Linear`` in ``model.model.out_network`` (mean over nodes).
+    Gradients are computed **in closed form** from last-layer inputs and softmax probabilities,
+    so the Schake backbone is never backpropagated during acquisition.
 
     If ``cfg['active_learning']['emc_max_pool_graphs']`` is a positive integer smaller than the
     pool, a **random subset** of that size is scored each round (much faster, not equivalent to
@@ -184,7 +210,7 @@ def emc_acquisition(pool_ids: List[str], budget: int, rng: np.random.Generator, 
         Sorted list of selected protein IDs (length = min(budget, len(pool_ids))).
     """
     import torch
-    import torch.nn.functional as F
+    import torch.nn as nn
     from torch.utils.data import Subset
     from torch_geometric.loader import DataLoader
 
@@ -247,21 +273,40 @@ def emc_acquisition(pool_ids: List[str], budget: int, rng: np.random.Generator, 
     model.eval()
 
     final_layer = model.model.out_network[-1]
+    if not isinstance(final_layer, nn.Linear):
+        raise TypeError(
+            "EMC acquisition fast path expects model.model.out_network[-1] to be nn.Linear; "
+            f"got {type(final_layer).__name__}. Refactor _emc_node_score_last_linear or the model head."
+        )
 
     emc_by_id: dict = {}
     graph_idx = 0
 
     for batch in pool_loader:
         batch = batch.to(device)
-        logits = model(batch)
+        h_last: Optional[torch.Tensor] = None
+
+        def _capture_last_in(_mod, inp, _out):
+            nonlocal h_last
+            h_last = inp[0].detach()
+
+        hook = final_layer.register_forward_hook(_capture_last_in)
+        try:
+            with torch.no_grad():
+                logits = model(batch)
+        finally:
+            hook.remove()
+
+        if h_last is None:
+            raise RuntimeError("EMC: forward hook did not capture last Linear input.")
+
         probs = torch.softmax(logits.float(), dim=-1)
-        num_classes = int(logits.size(-1))
 
         for gi in range(batch.num_graphs):
             mask = batch.batch == gi
-            node_logits = logits[mask]
+            node_h = h_last[mask]
             node_probs = probs[mask]
-            n_nodes = int(node_logits.size(0))
+            n_nodes = int(node_h.size(0))
             if n_nodes == 0:
                 continue
 
@@ -279,17 +324,7 @@ def emc_acquisition(pool_ids: List[str], budget: int, rng: np.random.Generator, 
                 node_iter = list(range(n_nodes))
 
             for ni in node_iter:
-                logits_row = node_logits[ni : ni + 1]
-                p_row = node_probs[ni]
-                for j in range(num_classes):
-                    model.zero_grad()
-                    target = torch.tensor([j], device=device, dtype=torch.long)
-                    loss = F.cross_entropy(logits_row, target)
-                    # Same forward for all (node, class) steps; keep graph until next batch overwrites `logits`.
-                    loss.backward(retain_graph=True)
-                    grad = final_layer.weight.grad
-                    gn = float(grad.norm().item()) if grad is not None else 0.0
-                    graph_emc += p_row[j].item() * gn
+                graph_emc += _emc_node_score_last_linear(node_h[ni], node_probs[ni])
 
             denom = max(1, len(node_iter))
             emc_by_id[pid] = graph_emc / denom

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run EMC acquisition logic on exactly one graph (sanity check / timing).
 
-Full EMC is slow: for each node it runs 8 backward passes (one per SS8 class).
+EMC uses an analytic last-layer score (no per-class full-graph backward).
 Use this before waiting on the whole pool (~9500 graphs after round 0).
 
 Example::
