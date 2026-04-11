@@ -4,7 +4,8 @@
 set -euo pipefail
 
 PROJECT_ROOT="/opt/dlami/nvme/esm3_gnn_distill_baseline"
-CONFIG="${PROJECT_ROOT}/configs/al_aws_dispef_m.yaml"
+# Override: CONFIG=/path/to/custom.yaml ./scripts/run_al_loop_aws.sh
+CONFIG="${CONFIG:-${PROJECT_ROOT}/configs/al_aws_dispef_m.yaml}"
 MINIFORGE_ROOT="${HOME}/miniforge3"
 ENV_PREFIX="/opt/dlami/nvme/envs/esm3_gnn_distill"
 
