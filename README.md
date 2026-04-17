@@ -320,8 +320,8 @@ After one or more runs complete, generate plots with:
 
 ```bash
 python scripts/plot_al_results.py \
-    --results outputs/al/random_<ID>/al_results.json \
-              outputs/al/mc_dropout_<ID>/al_results.json \
+    --results ../outputs/al/random_<ID>/al_results.json \
+              ../outputs/al/mc_dropout_<ID>/al_results.json \
     --labels random mc_dropout \
     --composition \
     --output-dir outputs/plots
