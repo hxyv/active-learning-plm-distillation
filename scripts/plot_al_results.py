@@ -184,6 +184,148 @@ def plot_pool_uncertainty(
     print(f"Saved: {out_path}")
 
 
+def plot_selected_vs_pool(
+    results: List[Dict],
+    label: str,
+    output_dir: Path,
+) -> None:
+    """Per-round selected-vs-pool uncertainty (variance + BALD) for one strategy.
+
+    The core diagnostic for any uncertainty-based acquisition: the selected
+    batch's mean score should sit visibly above the pool mean, otherwise the
+    strategy is not actually picking the proteins it claims to.  Drawn only
+    for strategies whose rounds carry ``acquisition.selected_stats`` — the
+    random baseline is silently skipped.
+    """
+    rows = [r for r in results if (r.get("acquisition") or {}).get("selected_stats")]
+    if not rows:
+        return
+    rounds = np.array([r["round"] for r in rows])
+
+    def _extract(stat_key: str, metric: str):
+        return (
+            np.array([r["acquisition"][stat_key][metric]["mean"] for r in rows]),
+            np.array([r["acquisition"][stat_key][metric]["p10"] for r in rows]),
+            np.array([r["acquisition"][stat_key][metric]["p90"] for r in rows]),
+        )
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    for ax, metric, title in zip(axes, ["variance", "bald"], ["Variance", "BALD"]):
+        pm, p10, p90 = _extract("pool_stats", metric)
+        sm, s10, s90 = _extract("selected_stats", metric)
+        ax.plot(rounds, pm, marker="o", color="#377eb8", label="pool (mean)")
+        ax.fill_between(rounds, np.clip(p10, 1e-12, None), np.clip(p90, 1e-12, None),
+                        alpha=0.15, color="#377eb8", label="pool p10–p90")
+        ax.plot(rounds, sm, marker="s", color="#e41a1c", label="selected (mean)")
+        ax.fill_between(rounds, np.clip(s10, 1e-12, None), np.clip(s90, 1e-12, None),
+                        alpha=0.15, color="#e41a1c", label="selected p10–p90")
+
+        # Use log scale only when values span more than ~1.5 orders of magnitude.
+        vals = np.concatenate([pm, sm, p10, p90, s10, s90])
+        vals = vals[vals > 0]
+        if vals.size and vals.max() / max(vals.min(), 1e-12) > 30:
+            ax.set_yscale("log")
+
+        ax.set_xlabel("Round")
+        ax.set_ylabel(f"Per-protein {metric}")
+        ax.set_title(f"{title} — pool vs selected ({label})")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3, which="both")
+
+    fig.tight_layout()
+    out_path = output_dir / f"al_selected_vs_pool_{label}.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_random_overlap(
+    results_list: List[List[Dict]],
+    labels: List[str],
+    output_dir: Path,
+) -> None:
+    """Per-round Jaccard(selected, independent random draw from same pool).
+
+    For the random strategy this line measures sampling noise between two
+    independent random seeds; for uncertainty-based strategies it is a
+    selectivity anchor — the further below the random run, the more the
+    strategy's pick diverges from what a random draw would have taken.
+    """
+    fig, ax = plt.subplots(figsize=(8, 5))
+    plotted_any = False
+    for results, label in zip(results_list, labels):
+        rounds, jacc = [], []
+        for r in results:
+            j = r.get("random_overlap_jaccard")
+            if j is None:
+                continue
+            rounds.append(r["round"])
+            jacc.append(j)
+        if not rounds:
+            continue
+        plotted_any = True
+        ax.plot(rounds, jacc, marker="o", label=label)
+
+    if not plotted_any:
+        plt.close(fig)
+        return
+
+    ax.set_xlabel("Round")
+    ax.set_ylabel("Jaccard(selected, random_ref)")
+    ax.set_title("Overlap of acquisition pick with an independent random draw")
+    ax.set_ylim(0, 1)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out_path = output_dir / "al_random_overlap_jaccard.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_acquired_length(
+    results_list: List[List[Dict]],
+    labels: List[str],
+    output_dir: Path,
+) -> None:
+    """Per-round mean residues-per-protein of the acquired batch.
+
+    A length-bias check: MC Dropout (or any model-based strategy) that tends
+    to assign higher uncertainty to longer proteins will show a sustained gap
+    above the random baseline here.
+    """
+    fig, ax = plt.subplots(figsize=(8, 5))
+    plotted_any = False
+    for results, label in zip(results_list, labels):
+        rounds, mean_len = [], []
+        for r in results:
+            n_res = r.get("num_selected_residues")
+            n_sel = (r.get("acquisition") or {}).get("selected")
+            if n_res is None or not n_sel:
+                continue
+            rounds.append(r["round"])
+            mean_len.append(n_res / n_sel)
+        if not rounds:
+            continue
+        plotted_any = True
+        ax.plot(rounds, mean_len, marker="o", label=label)
+
+    if not plotted_any:
+        plt.close(fig)
+        return
+
+    ax.set_xlabel("Round")
+    ax.set_ylabel("Mean residues / acquired protein")
+    ax.set_title("Acquired protein length per round (length-bias check)")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out_path = output_dir / "al_acquired_length.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
 def plot_per_class_accuracy(
     results: List[Dict],
     label: str,
@@ -322,10 +464,13 @@ def main() -> None:
 
     plot_learning_curves(results_list, labels, args.output_dir)
     plot_pool_uncertainty(results_list, labels, args.output_dir)
+    plot_random_overlap(results_list, labels, args.output_dir)
+    plot_acquired_length(results_list, labels, args.output_dir)
 
     for results, label in zip(results_list, labels):
         print_round_table(results, label)
         plot_per_class_accuracy(results, label, args.output_dir)
+        plot_selected_vs_pool(results, label, args.output_dir)
         if args.composition:
             plot_ss8_composition(results, label, args.output_dir)
 
