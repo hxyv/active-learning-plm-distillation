@@ -6,6 +6,7 @@ import contextlib
 import csv
 import json
 import math
+import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -293,6 +294,7 @@ class Trainer:
         else:
             self.model.eval()
 
+        num_classes = 8  # SS8
         accum = {
             "total_loss": 0.0,
             "teacher_loss": 0.0,
@@ -303,7 +305,13 @@ class Trainer:
             "dssp_acc": 0.0,
             "n_nodes": 0.0,
             "n_dssp": 0.0,
+            "grad_norm_sum": 0.0,
+            "grad_norm_steps": 0,
+            "per_class_correct": [0.0] * num_classes,
+            "per_class_total":   [0.0] * num_classes,
         }
+
+        epoch_start = time.perf_counter()
 
         for step_idx, batch in enumerate(loader, start=1):
             if train:
@@ -317,6 +325,14 @@ class Trainer:
 
                 if train:
                     self.scaler.scale(total).backward()
+                    # Compute total grad norm post-unscale (infinite max_norm => no
+                    # clipping, just returns the current norm).
+                    self.scaler.unscale_(self.optimizer)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), max_norm=float("inf")
+                    )
+                    accum["grad_norm_sum"] += float(grad_norm.item())
+                    accum["grad_norm_steps"] += 1
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                     self.global_step += 1
@@ -336,6 +352,12 @@ class Trainer:
             accum["n_nodes"] += n_nodes
             accum["n_dssp"] += n_dssp
 
+            pc_correct = metrics.get("per_class_teacher_correct", [0.0] * num_classes)
+            pc_total   = metrics.get("per_class_teacher_total",   [0.0] * num_classes)
+            for c in range(num_classes):
+                accum["per_class_correct"][c] += pc_correct[c]
+                accum["per_class_total"][c]   += pc_total[c]
+
             if train and self.wandb_run is not None and self.log_every_steps > 0:
                 if (self.global_step % self.log_every_steps) == 0:
                     self.wandb_run.log(
@@ -349,11 +371,18 @@ class Trainer:
                             "batch_teacher_kl": float(losses["teacher_kl"].detach().item()),
                             "batch_dssp_loss": float(losses["dssp_loss"].detach().item()),
                             "batch_teacher_top1_acc": float(metrics["teacher_top1_acc"]),
+                            "batch_grad_norm": float(grad_norm.item()),
                         },
                         step=self.global_step,
                     )
 
+        epoch_wall_time = time.perf_counter() - epoch_start
         denom = max(accum["n_nodes"], 1.0)
+        per_class_acc = [
+            (accum["per_class_correct"][c] / accum["per_class_total"][c])
+            if accum["per_class_total"][c] > 0 else float("nan")
+            for c in range(num_classes)
+        ]
         out = {
             "total_loss": accum["total_loss"] / denom,
             "teacher_loss": accum["teacher_loss"] / denom,
@@ -364,6 +393,14 @@ class Trainer:
             "dssp_acc": accum["dssp_acc"] / max(accum["n_dssp"], 1.0) if accum["n_dssp"] > 0 else float("nan"),
             "n_nodes": accum["n_nodes"],
             "n_dssp": accum["n_dssp"],
+            "grad_norm_mean": (
+                accum["grad_norm_sum"] / accum["grad_norm_steps"]
+                if accum["grad_norm_steps"] > 0 else float("nan")
+            ),
+            "wall_time_s": epoch_wall_time,
+            "per_class_acc": per_class_acc,
+            "per_class_correct": list(accum["per_class_correct"]),
+            "per_class_total":   list(accum["per_class_total"]),
         }
         return out
 
@@ -472,6 +509,8 @@ class Trainer:
                 "train_dssp_loss": train_metrics["dssp_loss"],
                 "train_teacher_top1_acc": train_metrics["teacher_top1_acc"],
                 "train_dssp_acc": train_metrics["dssp_acc"],
+                "train_grad_norm_mean": train_metrics.get("grad_norm_mean", float("nan")),
+                "train_wall_time_s": train_metrics.get("wall_time_s", float("nan")),
                 "val_total_loss": val_metrics["total_loss"],
                 "val_teacher_loss": val_metrics["teacher_loss"],
                 "val_teacher_ce": val_metrics["teacher_ce"],
@@ -479,6 +518,7 @@ class Trainer:
                 "val_dssp_loss": val_metrics["dssp_loss"],
                 "val_teacher_top1_acc": val_metrics["teacher_top1_acc"],
                 "val_dssp_acc": val_metrics["dssp_acc"],
+                "val_wall_time_s": val_metrics.get("wall_time_s", float("nan")),
             }
             history.append(row)
             if self.wandb_run is not None:
@@ -533,6 +573,8 @@ class Trainer:
             self.model.load_state_dict(best_ckpt["model_state"])
 
         test_metrics = self._epoch_loop(self.test_loader, train=False, epoch=self.best_epoch)
+        from data.constants import SS8_CLASSES
+        per_class_acc = test_metrics.get("per_class_acc", [float("nan")] * len(SS8_CLASSES))
         final = {
             "best_epoch": self.best_epoch,
             "best_val_total_loss": self.best_val,
@@ -541,6 +583,10 @@ class Trainer:
             "test_teacher_kl": test_metrics["teacher_kl"],
             "test_teacher_top1_acc": test_metrics["teacher_top1_acc"],
             "test_dssp_acc": test_metrics["dssp_acc"],
+            "test_per_class_acc": {
+                cls: float(per_class_acc[i]) for i, cls in enumerate(SS8_CLASSES)
+            },
+            "test_wall_time_s": test_metrics.get("wall_time_s", float("nan")),
             "checkpoint_path": str(ckpt_to_eval),
         }
         self.metrics_path.write_text(json.dumps(final, indent=2))

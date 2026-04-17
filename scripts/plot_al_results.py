@@ -71,11 +71,17 @@ def load_results(path: Path) -> List[Dict]:
 
 
 def extract_curve(results: List[Dict]) -> tuple:
-    """Return (num_labeled, test_acc, test_ce) arrays."""
+    """Return (num_labeled, num_residues, test_acc, test_ce) arrays."""
     num_labeled = [r["num_train"] for r in results]
+    num_residues = [r.get("num_train_residues", float("nan")) for r in results]
     test_acc = [r["metrics"].get("test_teacher_top1_acc", float("nan")) for r in results]
     test_ce = [r["metrics"].get("test_teacher_ce", float("nan")) for r in results]
-    return np.array(num_labeled), np.array(test_acc), np.array(test_ce)
+    return (
+        np.array(num_labeled),
+        np.array(num_residues, dtype=float),
+        np.array(test_acc),
+        np.array(test_ce),
+    )
 
 
 def plot_learning_curves(
@@ -83,27 +89,128 @@ def plot_learning_curves(
     labels: List[str],
     output_dir: Path,
 ) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    # Two rows: top = x by protein count, bottom = x by residue count.
+    # Residue row is drawn only if all results carry num_train_residues.
+    curves = [extract_curve(r) for r in results_list]
+    have_residues = all(not np.isnan(c[1]).any() for c in curves)
+    n_rows = 2 if have_residues else 1
+    fig, axes = plt.subplots(n_rows, 2, figsize=(12, 5 * n_rows), squeeze=False)
 
-    for results, label in zip(results_list, labels):
-        num_labeled, test_acc, test_ce = extract_curve(results)
-        axes[0].plot(num_labeled, test_acc, marker="o", markersize=4, label=label)
-        axes[1].plot(num_labeled, test_ce, marker="o", markersize=4, label=label)
+    for (num_labeled, num_residues, test_acc, test_ce), label in zip(curves, labels):
+        axes[0, 0].plot(num_labeled, test_acc, marker="o", markersize=4, label=label)
+        axes[0, 1].plot(num_labeled, test_ce, marker="o", markersize=4, label=label)
+        if have_residues:
+            axes[1, 0].plot(num_residues, test_acc, marker="o", markersize=4, label=label)
+            axes[1, 1].plot(num_residues, test_ce, marker="o", markersize=4, label=label)
 
-    axes[0].set_xlabel("Labeled proteins")
-    axes[0].set_ylabel("Test teacher top-1 accuracy")
-    axes[0].set_title("AL Learning Curve — Accuracy")
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
+    axes[0, 0].set_xlabel("Labeled proteins")
+    axes[0, 0].set_ylabel("Test teacher top-1 accuracy")
+    axes[0, 0].set_title("AL Learning Curve — Accuracy (by proteins)")
+    axes[0, 0].legend(); axes[0, 0].grid(True, alpha=0.3)
 
-    axes[1].set_xlabel("Labeled proteins")
-    axes[1].set_ylabel("Test teacher CE loss")
-    axes[1].set_title("AL Learning Curve — Cross-Entropy")
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
+    axes[0, 1].set_xlabel("Labeled proteins")
+    axes[0, 1].set_ylabel("Test teacher CE loss")
+    axes[0, 1].set_title("AL Learning Curve — CE (by proteins)")
+    axes[0, 1].legend(); axes[0, 1].grid(True, alpha=0.3)
+
+    if have_residues:
+        axes[1, 0].set_xlabel("Labeled residues")
+        axes[1, 0].set_ylabel("Test teacher top-1 accuracy")
+        axes[1, 0].set_title("AL Learning Curve — Accuracy (by residues)")
+        axes[1, 0].legend(); axes[1, 0].grid(True, alpha=0.3)
+
+        axes[1, 1].set_xlabel("Labeled residues")
+        axes[1, 1].set_ylabel("Test teacher CE loss")
+        axes[1, 1].set_title("AL Learning Curve — CE (by residues)")
+        axes[1, 1].legend(); axes[1, 1].grid(True, alpha=0.3)
 
     fig.tight_layout()
     out_path = output_dir / "al_learning_curves.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_pool_uncertainty(
+    results_list: List[List[Dict]],
+    labels: List[str],
+    output_dir: Path,
+) -> None:
+    """Per-round pool-wide uncertainty distribution (mean ± p10/p90 band).
+
+    Drawn only for runs whose rounds contain acquisition.pool_stats — i.e.
+    model-based strategies. Random runs silently skipped.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    plotted_any = False
+    for results, label in zip(results_list, labels):
+        rounds, var_mean, var_p10, var_p90 = [], [], [], []
+        bald_mean, bald_p10, bald_p90 = [], [], []
+        for r in results:
+            ps = (r.get("acquisition") or {}).get("pool_stats")
+            if not ps:
+                continue
+            rounds.append(r["round"])
+            var_mean.append(ps["variance"]["mean"])
+            var_p10.append(ps["variance"]["p10"])
+            var_p90.append(ps["variance"]["p90"])
+            bald_mean.append(ps["bald"]["mean"])
+            bald_p10.append(ps["bald"]["p10"])
+            bald_p90.append(ps["bald"]["p90"])
+        if not rounds:
+            continue
+        plotted_any = True
+        axes[0].plot(rounds, var_mean, marker="o", label=label)
+        axes[0].fill_between(rounds, var_p10, var_p90, alpha=0.2)
+        axes[1].plot(rounds, bald_mean, marker="o", label=label)
+        axes[1].fill_between(rounds, bald_p10, bald_p90, alpha=0.2)
+
+    if not plotted_any:
+        plt.close(fig)
+        return
+
+    axes[0].set_xlabel("Round"); axes[0].set_ylabel("Pool variance score")
+    axes[0].set_title("Pool variance (selection score) — mean, p10–p90 band")
+    axes[0].legend(); axes[0].grid(True, alpha=0.3)
+
+    axes[1].set_xlabel("Round"); axes[1].set_ylabel("Pool BALD (mutual info)")
+    axes[1].set_title("Pool BALD — mean, p10–p90 band")
+    axes[1].legend(); axes[1].grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    out_path = output_dir / "al_pool_uncertainty.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {out_path}")
+
+
+def plot_per_class_accuracy(
+    results: List[Dict],
+    label: str,
+    output_dir: Path,
+) -> None:
+    """Per-round per-SS8-class test accuracy as a heatmap."""
+    rows = [r for r in results if "test_per_class_acc" in r.get("metrics", {})]
+    if not rows:
+        return
+    round_nums = [r["round"] for r in rows]
+    matrix = np.array([
+        [r["metrics"]["test_per_class_acc"].get(cls, float("nan")) for cls in SS8_CLASSES]
+        for r in rows
+    ])  # [n_rounds, 8]
+
+    fig, ax = plt.subplots(figsize=(max(6, len(round_nums) * 0.4), 4))
+    im = ax.imshow(matrix.T, aspect="auto", cmap="viridis", vmin=0, vmax=1)
+    ax.set_yticks(range(len(SS8_CLASSES)))
+    ax.set_yticklabels(SS8_CLASSES)
+    ax.set_xticks(range(len(round_nums)))
+    ax.set_xticklabels(round_nums, fontsize=8)
+    ax.set_xlabel("Round")
+    ax.set_ylabel("SS8 class")
+    ax.set_title(f"Per-class test accuracy — {label}")
+    fig.colorbar(im, ax=ax, label="accuracy")
+    fig.tight_layout()
+    out_path = output_dir / f"al_per_class_acc_{label}.png"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"Saved: {out_path}")
@@ -214,9 +321,11 @@ def main() -> None:
     results_list = [load_results(p) for p in args.results]
 
     plot_learning_curves(results_list, labels, args.output_dir)
+    plot_pool_uncertainty(results_list, labels, args.output_dir)
 
     for results, label in zip(results_list, labels):
         print_round_table(results, label)
+        plot_per_class_accuracy(results, label, args.output_dir)
         if args.composition:
             plot_ss8_composition(results, label, args.output_dir)
 

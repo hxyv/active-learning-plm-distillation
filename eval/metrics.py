@@ -36,6 +36,20 @@ def compute_teacher_metrics(
             "correct_motif_prob": correct_motif_prob,
         }
 
+        # Per-class teacher-top1 counts (student argmax == teacher argmax, grouped
+        # by teacher argmax).  Returned as raw counts so callers can sum across
+        # batches and divide once at the end.
+        num_classes = int(logits.shape[-1])
+        correct_node = (student_argmax == teacher_argmax)
+        per_class_correct = torch.zeros(num_classes, device=logits.device)
+        per_class_total = torch.zeros(num_classes, device=logits.device)
+        for c in range(num_classes):
+            mask_c = teacher_argmax == c
+            per_class_total[c] = mask_c.sum()
+            per_class_correct[c] = correct_node[mask_c].sum()
+        out["per_class_teacher_correct"] = per_class_correct.cpu().tolist()
+        out["per_class_teacher_total"] = per_class_total.cpu().tolist()
+
         if dssp_idx is not None:
             valid = dssp_idx >= 0
             if valid.any():

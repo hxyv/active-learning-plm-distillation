@@ -287,7 +287,7 @@ sbatch --export=ALL,STRATEGY=random,RESUME=1,RESUME_OUTPUT_DIR=/path/to/existing
 outputs/al/<strategy>_<JOB_ID>/
 ├── al_state.json             ← pool/train state (updated each round)
 ├── al_results.json           ← aggregated per-round metrics for plotting
-├── al_loop.log               ← per-round table: labeled | acc | CE | SS8 composition
+├── al_loop.log               ← per-round table: labeled | acc | CE | SS8 | wall times
 ├── splits/
 │   ├── splits_round_00.json
 │   ├── splits_round_01.json
@@ -295,12 +295,24 @@ outputs/al/<strategy>_<JOB_ID>/
 ├── round_00/
 │   ├── config_resolved.yaml
 │   ├── train.log
-│   ├── history.csv
-│   ├── metrics_final.json
-│   └── round_summary.json   ← includes selected_ss8_composition
+│   ├── history.csv              ← per-epoch train/val metrics + grad norm + wall time
+│   ├── metrics_final.json       ← final test metrics incl. test_per_class_acc
+│   └── round_summary.json       ← fields listed below
 └── round_01/
     └── ...
 ```
+
+`round_summary.json` fields (per round):
+
+| Field | Description |
+|---|---|
+| `round`, `num_train`, `num_pool` | round index and current split sizes |
+| `num_train_residues`, `num_selected_residues` | residue counts (labeled-residues is the real labeling-cost axis since proteins vary 16–399 residues) |
+| `metrics` | final test metrics from the trainer, including `test_per_class_acc` (per-SS8-class accuracy) |
+| `selected_ss8_composition` | mean SS8 fractions of the proteins this round queried |
+| `train_wall_time_s`, `acquisition_wall_time_s` | per-round wall clocks |
+| `random_overlap_jaccard` | Jaccard of this strategy's pick vs. an independent random draw from the same pool (calibration anchor) |
+| `acquisition` | full acquisition diagnostics: `selection_score`, `n_passes`, `pool_stats` and `selected_stats` for variance / predictive entropy / expected entropy / BALD |
 
 ### Visualisation
 
@@ -316,13 +328,19 @@ python scripts/plot_al_results.py \
 ```
 
 Produces:
-- `al_learning_curves.png` — test accuracy and CE vs. labeled set size, one line per strategy
+- `al_learning_curves.png` — test accuracy and CE vs. labeled **proteins** and vs. labeled **residues** (one row each; the residues row is drawn only when all runs carry `num_train_residues`)
+- `al_pool_uncertainty.png` — per-round pool-wide mean ± p10–p90 band for the variance score and BALD (drawn only for strategies that record `pool_stats` — i.e. MC Dropout)
+- `al_per_class_acc_<strategy>.png` — heatmap of per-SS8-class test accuracy across rounds
 - `al_ss8_composition_<strategy>.png` — stacked bar chart of the 8 DSSP class fractions of acquired proteins per round (requires `--composition`)
 
-The log also prints a compact table per round:
+The log also prints a compact table per round, e.g.:
 ```
-Round 03 | labeled=3000 | test_acc=0.7124 | test_ce=0.8431
+Round 03 | labeled=3000 proteins (512834 residues) | test_acc=0.7124 | test_ce=0.8431 | train_wall=312.4s | acq_wall=48.1s
+  per-class test acc: G:0.45  H:0.89  I:0.12  T:0.63  E:0.81  B:0.08  S:0.54  C:0.83
   acquired SS8 composition: G:0.04  H:0.32  I:0.01  T:0.12  E:0.18  B:0.02  S:0.09  C:0.22
+  jaccard(selected, random_ref) = 0.043
+  pool variance: mean=1.23e-03 std=8.4e-04 p10=4.1e-04 p50=1.1e-03 p90=2.3e-03
+  pool BALD:     mean=5.2e-02  std=2.1e-02 p10=2.8e-02 p50=5.0e-02 p90=8.1e-02
 ```
 
 ### Available strategies
@@ -330,17 +348,19 @@ Round 03 | labeled=3000 | test_acc=0.7124 | test_ce=0.8431
 | Strategy | Flag | Status | Description |
 |----------|------|--------|-------------|
 | Random (passive) | `random` | ✅ implemented | Uniform random sampling — establishes the floor |
-| MC Dropout | `mc_dropout` | ✅ implemented | Mean predictive entropy over T=20 stochastic forward passes |
+| MC Dropout | `mc_dropout` | ✅ implemented | BALD (mutual information) over $T=20$ stochastic forward passes |
 | EMC | `emc` | planned | Expected Model Change via output-layer gradient norms |
 | Diversity | `diversity` | planned | Agglomerative clustering on node embeddings |
 
 ### MC Dropout details
 
-The Schake v2 output MLP has no dropout by default. Setting `model.mc_dropout_p: 0.1` in the config (already set in `configs/al_psc_dispef_m.yaml`) prepends a `nn.Dropout` layer to the output network. Both training and acquisition use this layer, following Gal & Ghahramani (2016).
+The Schake v2 output MLP has no dropout by default. Setting `model.mc_dropout_p: 0.1` in the config (already set in `configs/al_psc_dispef_m.yaml`) inserts `nn.Dropout` layers before every non-final Linear in the output MLP head. This placement is the Bernoulli variational approximation prescribed by Gal & Ghahramani (2016) — each stochastic forward pass corresponds to a sample from the approximate posterior over MLP weights. Dropout is active during both training and acquisition.
 
-At acquisition time the model runs in eval mode with dropout layers kept active. Uncertainty per protein is the mean per-residue predictive entropy averaged over 20 passes:
+At acquisition time the model runs in `eval` mode but every `nn.Dropout` module is flipped back to `train` mode so dropout remains stochastic (but without gradient tracking). Per pool protein, $T=20$ stochastic passes yield per-atom softmax vectors $p_{i,m}$. Selection is driven by the **BALD** score (Houlsby 2011; Gal, Islam & Ghahramani 2017) — the mutual information between the label and the weights, estimated from the $T$ posterior samples:
 
-$$U(p) = \frac{1}{T} \sum_{t=1}^{T} \frac{1}{L_p} \sum_{r=1}^{L_p} H\!\left(\text{softmax}(\mathbf{z}_{t,r})\right)$$
+$$u(p) = \frac{1}{3 n_{res}} \sum_{i=1}^{3 n_{res}} \!\left[\, H\!\left(\bar p_i\right) - \frac{1}{T} \sum_{m=1}^{T} H(p_{i,m}) \,\right], \qquad \bar p_i = \frac{1}{T}\sum_m p_{i,m}$$
+
+The first term is total predictive uncertainty, the second is aleatoric (irreducible); their difference isolates the epistemic component — the portion reducible by acquiring a teacher label for protein $p$. The top 500 proteins by BALD are queried each round. Mean-per-class softmax variance (the Gal 2016 form), predictive entropy, and expected entropy are also computed and logged per round for ablation but do not drive selection.
 
 To run MC Dropout acquisition:
 

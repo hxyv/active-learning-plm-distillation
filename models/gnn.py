@@ -287,14 +287,20 @@ class SchakeDistillModel(nn.Module):
             single_pro=False,
         )
 
-        # Prepend a Dropout layer to the output MLP to support MC Dropout uncertainty
-        # sampling at acquisition time.  mc_dropout_p=0.0 (default) leaves out_network
-        # unchanged so the offline baseline is unaffected.
+        # Insert Dropout before each weight matrix in the readout MLP (except the
+        # final logit layer).  Per Gal & Ghahramani (2016), this is the placement
+        # that makes MC Dropout a Bernoulli variational approximation to the
+        # posterior over MLP weights, so each forward pass corresponds to a
+        # posterior sample.  mc_dropout_p=0.0 leaves out_network untouched so the
+        # offline baseline is unaffected.
         if mc_dropout_p > 0.0:
-            self.model.out_network = torch.nn.Sequential(
-                torch.nn.Dropout(p=mc_dropout_p),
-                *list(self.model.out_network.children()),
-            )
+            children = list(self.model.out_network.children())
+            new_layers = []
+            for i, layer in enumerate(children):
+                if isinstance(layer, torch.nn.Linear) and i != len(children) - 1:
+                    new_layers.append(torch.nn.Dropout(p=mc_dropout_p))
+                new_layers.append(layer)
+            self.model.out_network = torch.nn.Sequential(*new_layers)
 
         # Atom embedding IDs expected by official Schake helpers for bb3:
         # C -> 0, CA -> 1, N -> 63.

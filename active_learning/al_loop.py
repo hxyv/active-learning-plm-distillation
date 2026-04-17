@@ -26,6 +26,7 @@ import argparse
 import copy
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -33,7 +34,7 @@ import numpy as np
 
 from active_learning.acquisition import mc_dropout_acquisition, random_acquisition
 from active_learning.pool_manager import ALPoolManager
-from active_learning.protein_meta import ss8_composition_of_selected
+from active_learning.protein_meta import load_protein_meta, ss8_composition_of_selected
 from train.config_utils import load_config, save_config
 from train.trainer import Trainer
 from train.utils import infer_device, make_run_dir, set_seed, setup_logging
@@ -91,6 +92,22 @@ def maybe_init_wandb(cfg: dict, run_name: str, run_dir: Path, logger_):
 # Results aggregation
 # ------------------------------------------------------------------
 
+def _sum_residues(protein_ids: List[str], processed_root: Path, dataset_name: str) -> int:
+    """Total residue count across a list of proteins (0 if metadata missing)."""
+    if not protein_ids:
+        return 0
+    meta = load_protein_meta(processed_root, dataset_name, protein_ids)
+    return int(sum(meta[pid]["num_residues"] for pid in protein_ids if pid in meta))
+
+
+def _jaccard(a: List[str], b: List[str]) -> float:
+    """Jaccard similarity between two ID lists."""
+    sa, sb = set(a), set(b)
+    if not sa and not sb:
+        return float("nan")
+    return len(sa & sb) / max(1, len(sa | sb))
+
+
 def save_round_summary(
     output_dir: Path,
     round_idx: int,
@@ -99,17 +116,33 @@ def save_round_summary(
     selected_ids: Optional[List[str]] = None,
     processed_root: Optional[Path] = None,
     dataset_name: Optional[str] = None,
+    train_wall_time_s: Optional[float] = None,
+    acquisition_wall_time_s: Optional[float] = None,
+    acquisition_diagnostics: Optional[Dict] = None,
+    random_overlap_jaccard: Optional[float] = None,
 ) -> None:
+    train_ids = pool_manager.get_train_ids()
     summary: Dict = {
         "round": round_idx,
-        "num_train": len(pool_manager.get_train_ids()),
+        "num_train": len(train_ids),
         "num_pool": len(pool_manager.get_pool_ids()),
         "metrics": metrics,
     }
+    if processed_root and dataset_name:
+        summary["num_train_residues"] = _sum_residues(train_ids, processed_root, dataset_name)
     if selected_ids and processed_root and dataset_name:
         summary["selected_ss8_composition"] = ss8_composition_of_selected(
             selected_ids, processed_root, dataset_name
         )
+        summary["num_selected_residues"] = _sum_residues(selected_ids, processed_root, dataset_name)
+    if train_wall_time_s is not None:
+        summary["train_wall_time_s"] = float(train_wall_time_s)
+    if acquisition_wall_time_s is not None:
+        summary["acquisition_wall_time_s"] = float(acquisition_wall_time_s)
+    if acquisition_diagnostics is not None:
+        summary["acquisition"] = acquisition_diagnostics
+    if random_overlap_jaccard is not None:
+        summary["random_overlap_jaccard"] = float(random_overlap_jaccard)
     path = output_dir / f"round_{round_idx:02d}" / "round_summary.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, indent=2))
@@ -208,6 +241,7 @@ def run_al_loop(
             round_cfg["wandb"]["name"] = round_run_name
 
         wandb_run = maybe_init_wandb(round_cfg, round_run_name, round_run_dir, round_logger)
+        train_start = time.perf_counter()
         try:
             trainer = Trainer(
                 cfg=round_cfg,
@@ -220,18 +254,27 @@ def run_al_loop(
         finally:
             if wandb_run is not None:
                 wandb_run.finish()
+        train_wall_time_s = time.perf_counter() - train_start
 
         # Acquire next batch (not needed after the last round)
         selected: List[str] = []
+        acquisition_diagnostics: Optional[Dict] = None
+        acquisition_wall_time_s: Optional[float] = None
+        random_overlap_jaccard: Optional[float] = None
         if round_idx < num_rounds:
             pool_ids = pool_manager.get_pool_ids()
             if not pool_ids:
                 logger.warning("Pool is empty after round %d; stopping early.", round_idx)
-                save_round_summary(output_dir, round_idx, metrics, pool_manager)
+                save_round_summary(
+                    output_dir, round_idx, metrics, pool_manager,
+                    train_wall_time_s=train_wall_time_s,
+                    processed_root=processed_root, dataset_name=dataset_name,
+                )
                 break
             # Advance the rng deterministically per round
             round_rng = np.random.default_rng(seed + round_idx)
-            selected = acquisition_fn(
+            acq_start = time.perf_counter()
+            selected, acquisition_diagnostics = acquisition_fn(
                 pool_ids,
                 budget_per_round,
                 round_rng,
@@ -239,6 +282,16 @@ def run_al_loop(
                 checkpoint_path=Path(metrics["checkpoint_path"]),
                 device=device,
             )
+            acquisition_wall_time_s = time.perf_counter() - acq_start
+
+            # Overlap of this strategy's pick with an independent random draw
+            # from the same pool. For strategy='random' this just measures
+            # sampling noise across two independent random seeds; still a
+            # useful calibration anchor for other strategies.
+            overlap_rng = np.random.default_rng(seed + round_idx + 10_000_000)
+            random_ref, _ = random_acquisition(pool_ids, budget_per_round, overlap_rng)
+            random_overlap_jaccard = _jaccard(selected, random_ref)
+
             pool_manager.advance_round(selected)
 
         save_round_summary(
@@ -246,20 +299,46 @@ def run_al_loop(
             selected_ids=selected if selected else None,
             processed_root=processed_root,
             dataset_name=dataset_name,
+            train_wall_time_s=train_wall_time_s,
+            acquisition_wall_time_s=acquisition_wall_time_s,
+            acquisition_diagnostics=acquisition_diagnostics,
+            random_overlap_jaccard=random_overlap_jaccard,
         )
 
         # Print compact round summary
         acc = metrics.get("test_teacher_top1_acc", float("nan"))
         ce = metrics.get("test_teacher_ce", float("nan"))
+        n_res = _sum_residues(pool_manager.get_train_ids(), processed_root, dataset_name)
         logger.info(
-            "Round %02d | labeled=%d | test_acc=%.4f | test_ce=%.4f",
-            round_idx, len(pool_manager.get_train_ids()), acc, ce,
+            "Round %02d | labeled=%d proteins (%d residues) | test_acc=%.4f | "
+            "test_ce=%.4f | train_wall=%.1fs | acq_wall=%s",
+            round_idx, len(pool_manager.get_train_ids()), n_res, acc, ce,
+            train_wall_time_s,
+            f"{acquisition_wall_time_s:.1f}s" if acquisition_wall_time_s is not None else "—",
         )
+        per_class = metrics.get("test_per_class_acc", {})
+        if per_class:
+            pc_str = "  ".join(f"{cls}:{per_class.get(cls, float('nan')):.3f}" for cls in per_class)
+            logger.info("  per-class test acc: %s", pc_str)
         if selected:
             from active_learning.protein_meta import ss8_composition_of_selected
             comp = ss8_composition_of_selected(selected, processed_root, dataset_name)
             comp_str = "  ".join(f"{cls}:{v:.2f}" for cls, v in comp.items())
             logger.info("  acquired SS8 composition: %s", comp_str)
+            if random_overlap_jaccard is not None:
+                logger.info("  jaccard(selected, random_ref) = %.3f", random_overlap_jaccard)
+            if acquisition_diagnostics and "pool_stats" in acquisition_diagnostics:
+                ps = acquisition_diagnostics["pool_stats"]
+                logger.info(
+                    "  pool variance: mean=%.4e std=%.4e p10=%.4e p50=%.4e p90=%.4e",
+                    ps["variance"]["mean"], ps["variance"]["std"],
+                    ps["variance"]["p10"], ps["variance"]["p50"], ps["variance"]["p90"],
+                )
+                logger.info(
+                    "  pool BALD:     mean=%.4e std=%.4e p10=%.4e p50=%.4e p90=%.4e",
+                    ps["bald"]["mean"], ps["bald"]["std"],
+                    ps["bald"]["p10"], ps["bald"]["p50"], ps["bald"]["p90"],
+                )
 
     aggregate_results(output_dir)
     logger.info("AL loop complete.")

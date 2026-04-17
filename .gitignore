@@ -36,3 +36,7 @@ Thumbs.db
 # Editors
 .idea/
 .vscode/
+
+notes/
+references/
+*.md
