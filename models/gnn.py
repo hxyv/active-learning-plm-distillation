@@ -302,6 +302,22 @@ class SchakeDistillModel(nn.Module):
                 new_layers.append(layer)
             self.model.out_network = torch.nn.Sequential(*new_layers)
 
+        # Additionally, dropout on scalar node features z between each
+        # SAKE+SchNet conv block.  z is rotation-invariant throughout the
+        # vendor forward (see Schake_modular_Zs.forward in
+        # models/vendor/schake_model_v2.py) so this placement preserves
+        # SE(3) equivariance and leaves all edge geometry (coord_diff, RBF,
+        # distances) untouched.  Active during training so MC Dropout is a
+        # valid variational posterior; _enable_mc_dropout flips them back on
+        # at acquisition time.
+        self.mc_dropout_p = float(mc_dropout_p)
+        if mc_dropout_p > 0.0:
+            self.inter_conv_dropouts = torch.nn.ModuleList(
+                [torch.nn.Dropout(p=mc_dropout_p) for _ in range(len(self.model.sake_layers))]
+            )
+        else:
+            self.inter_conv_dropouts = None
+
         # Atom embedding IDs expected by official Schake helpers for bb3:
         # C -> 0, CA -> 1, N -> 63.
         # Project this project's atom_idx order [N, CA, C] -> [63, 1, 0].
@@ -357,4 +373,36 @@ class SchakeDistillModel(nn.Module):
         else:
             batch = torch.zeros(pos.shape[0], dtype=torch.long, device=device)
 
-        return self.model(atom_ids, aa_ids, pos, batch)
+        if self.inter_conv_dropouts is None:
+            return self.model(atom_ids, aa_ids, pos, batch)
+
+        # Replicates Schake_modular_Zs.forward (models/vendor/schake_model_v2.py:128-159)
+        # with an nn.Dropout applied to z after each SAKE+SchNet block.  Used only
+        # when mc_dropout_p > 0 so the offline baseline's numerical path is untouched.
+        m = self.model
+        atom_ids_d = atom_ids.to(device_s)
+        aa_ids_d = aa_ids.to(device_s)
+        pos_d = pos.to(device_s)
+        batch_d = batch.to(device_s)
+
+        sake_edges, schnet_edges, sake_radial, sake_coord_diff, schnet_dist = \
+            m.get_flt_edges(atom_ids_d, pos_d, batch_d)
+        sake_rbf = m.sake_rbf_func(sake_radial)
+        schnet_rbf = m.schnet_rbf_func(schnet_dist)
+
+        if m.neigh_embed == "resid_bb3":
+            z = torch.cat(
+                [m.embedding_in[0](aa_ids_d), m.embedding_in[1](atom_ids_d)],
+                dim=-1,
+            )
+        else:
+            z = m.embedding_in(aa_ids_d)
+
+        for i, (sake_int, schnet_int) in enumerate(zip(m.sake_layers, m.schnet_layers)):
+            z = z + sake_int(z, sake_edges, sake_radial, sake_coord_diff, sake_rbf, None)
+            z = z + schnet_int(z, schnet_edges, schnet_dist, schnet_rbf, None)
+            z = self.inter_conv_dropouts[i](z)
+
+        z = m.embedding_out(z)
+        z = m.out_network(z)
+        return z
