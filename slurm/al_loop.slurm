@@ -11,13 +11,21 @@
 #SBATCH --export=ALL
 
 PROJECT_ROOT="/ocean/projects/cis250233p/xhu15/active-learning-plm-distillation"
-CONFIG="${PROJECT_ROOT}/configs/al_psc_dispef_m.yaml"
+
+# Config file: override with CONFIG_NAME (e.g. al_psc_dispef_m_bs48.yaml for the
+# matched-batch-size rerun against the team's AWS emc/diversity numbers).
+CONFIG_NAME="${CONFIG_NAME:-al_psc_dispef_m.yaml}"
+CONFIG="${PROJECT_ROOT}/configs/${CONFIG_NAME}"
 
 # Acquisition strategy: random (passive baseline), mc_dropout, emc, diversity
 STRATEGY="${STRATEGY:-random}"
 
+# Optional tag to disambiguate runs with the same strategy but different configs
+# (empty by default).  Set TAG=bs48 to get outputs/al/random_bs48_<jobid>.
+TAG="${TAG:+_${TAG}}"
+
 # Output directory for this AL run (one directory per strategy/seed)
-OUTPUT_DIR="/ocean/projects/cis250233p/xhu15/outputs/al/${STRATEGY}_${SLURM_JOB_ID}"
+OUTPUT_DIR="/ocean/projects/cis250233p/xhu15/outputs/al/${STRATEGY}${TAG}_${SLURM_JOB_ID}"
 
 # Resume an existing run by setting RESUME=1 when submitting:
 #   sbatch --export=ALL,STRATEGY=random,RESUME=1 slurm/al_loop.slurm
