@@ -7,7 +7,11 @@ variants have larger X, so the AL saving scales with model size.
 
 Loads N random proteins from a DISPEF-M split, rebuilds their sequence
 strings from ``aa_idx`` (and optionally backbone coords from ``xyz``), and
-times ``ESM3Teacher.predict_ss8_probs`` per protein on each requested model.
+times ``ESM3Teacher.benchmark_forward`` per protein on each requested model.
+``benchmark_forward`` requests sequence logits (supported on both local
+open-weights and Forge-hosted models) rather than the SS8 track, which
+Forge's managed logits endpoint does not expose. Forward-pass compute is
+the same; only the serialized output head differs.
 Reports median / p10 / p90 per-query latency and projects the total cost
 for full-pool labeling vs the AL final labeled set.
 
@@ -90,7 +94,9 @@ def _bench_one_model(
     teacher = ESM3Teacher(model_name=model_name, backend=backend)
 
     def _predict(seq: str, xyz: Optional[np.ndarray]) -> None:
-        teacher.predict_ss8_probs(
+        # Use sequence-logits forward for latency; Forge does not expose the SS8
+        # track, but the forward-pass compute cost is what we want to measure.
+        teacher.benchmark_forward(
             seq,
             backbone_coords_ang=(xyz if use_structure and xyz is not None else None),
         )

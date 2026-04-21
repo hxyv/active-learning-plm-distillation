@@ -144,14 +144,23 @@ class ESM3Teacher(TeacherBase):
             "Update teacher/esm3_teacher.py for your SDK response shape."
         )
 
-    def _call_logits(self, sequence: str, backbone_coords_ang: Optional[np.ndarray] = None):
-        """Call ESM3 to get secondary-structure logits.
+    def _call_logits(
+        self,
+        sequence: str,
+        backbone_coords_ang: Optional[np.ndarray] = None,
+        track: str = "secondary_structure",
+    ):
+        """Call ESM3 to get logits for a given output track.
 
         Args:
             sequence: amino acid sequence string.
             backbone_coords_ang: optional (L, 3, 3) float32 array of N/CA/C coordinates
-                in Angstroms. When provided, ESM3 conditions its SS8 predictions on the
+                in Angstroms. When provided, ESM3 conditions its predictions on the
                 structure in addition to the sequence.
+            track: which logits head to request. ``"secondary_structure"`` (default) is
+                used for distillation. ``"sequence"`` is only used for latency
+                benchmarking, because Forge's managed logits endpoint does not serve
+                the secondary-structure track for hosted models.
         """
         from esm.sdk.api import ESMProtein, ESMProteinError, LogitsConfig  # type: ignore
 
@@ -178,7 +187,13 @@ class ESM3Teacher(TeacherBase):
         if self._api_kind == "esm3_local" and hasattr(encoded, "to"):
             encoded = encoded.to(self.device)
 
-        logits_cfg = LogitsConfig(sequence=False, structure=False, secondary_structure=True)
+        if track == "secondary_structure":
+            logits_cfg = LogitsConfig(sequence=False, structure=False, secondary_structure=True)
+        elif track == "sequence":
+            logits_cfg = LogitsConfig(sequence=True, structure=False, secondary_structure=False)
+        else:
+            raise ValueError(f"Unsupported logits track: {track!r}")
+
         if self._api_kind == "esm3_forge":
             try:
                 output = self._model.logits(encoded, logits_cfg, return_bytes=False)
@@ -189,6 +204,23 @@ class ESM3Teacher(TeacherBase):
         if isinstance(output, ESMProteinError):
             raise RuntimeError(f"ESM3 logits failed: {output.error_code} {output.error_msg}")
         return output
+
+    def benchmark_forward(
+        self,
+        sequence: str,
+        backbone_coords_ang: Optional[np.ndarray] = None,
+    ) -> None:
+        """Single timed forward pass that works on both local and Forge backends.
+
+        Requests sequence logits (supported everywhere) rather than the SS8 track
+        (Forge-hosted models do not expose it). Same encode + forward compute as
+        ``predict_ss8_probs``; only the output head returned over the wire differs,
+        so this is representative for per-query latency benchmarking.
+        """
+        if self._api_kind is None:
+            raise RuntimeError("No active ESM3 backend")
+        with torch.no_grad():
+            self._call_logits(sequence, backbone_coords_ang=backbone_coords_ang, track="sequence")
 
     def _align_logits_length(self, logits: torch.Tensor, sequence_length: int) -> torch.Tensor:
         n = int(logits.shape[0])
