@@ -2,15 +2,7 @@
 
 Usage
 -----
-Passive (random) baseline::
-
-    python -m active_learning.al_loop \\
-        --config configs/al_psc_dispef_m.yaml \\
-        --strategy random \\
-        --output-dir /path/to/outputs/al/passive_run1 \\
-        --run-name psc_al_passive
-
-Expected model change (EMC; uses the same loop as random/mc_dropout)::
+Expected model change (EMC):
 
     python -m active_learning.al_loop \\
         --config configs/al_psc_dispef_m.yaml \\
@@ -26,7 +18,7 @@ Diversity (agglomerative clustering on graph-level embeddings from the AL candid
         --output-dir /path/to/outputs/al/div_run1 \\
         --run-name psc_al_div
 
-Diversity with propagated node features before pooling (optional flag)::
+Diversity with propagated node features before pooling::
 
     python -m active_learning.al_loop \\
         --config configs/al_psc_dispef_m.yaml \\
@@ -56,7 +48,6 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
-from active_learning.acquisition import mc_dropout_acquisition, random_acquisition
 from active_learning.pool_manager import ALPoolManager
 from active_learning.protein_meta import ss8_composition_of_selected
 from train.config_utils import load_config, save_config
@@ -73,18 +64,16 @@ from data.pyg_dataset import DistillationGraphDataset
 
 logger = logging.getLogger(__name__)
 
-# ------------------------------------------------------------------
-# Strategy registry
-# ------------------------------------------------------------------
 
+# Strategy registry
 _STRATEGIES: Dict[str, Callable] = {
-    "random": random_acquisition,
-    "mc_dropout": mc_dropout_acquisition,
+#    "random": random_acquisition,
+#    "mc_dropout": mc_dropout_acquisition,
     "emc": emc_acquisition,
     "diversity": diversity_acquisition,
 }
 
-
+# error reminder
 def get_acquisition_fn(strategy: str) -> Callable:
     if strategy not in _STRATEGIES:
         raise ValueError(
@@ -93,10 +82,7 @@ def get_acquisition_fn(strategy: str) -> Callable:
     return _STRATEGIES[strategy]
 
 
-# ------------------------------------------------------------------
-# W&B helpers (mirrors train/train.py)
-# ------------------------------------------------------------------
-
+# W&B helpers
 def maybe_init_wandb(cfg: dict, run_name: str, run_dir: Path, logger_):
     wb_cfg = cfg.get("wandb", {})
     if not wb_cfg.get("enabled", False):
@@ -122,10 +108,6 @@ def maybe_init_wandb(cfg: dict, run_name: str, run_dir: Path, logger_):
         return None
 
 
-# ------------------------------------------------------------------
-# Results aggregation
-# ------------------------------------------------------------------
-
 def save_round_summary(
     output_dir: Path,
     round_idx: int,
@@ -135,6 +117,7 @@ def save_round_summary(
     processed_root: Optional[Path] = None,
     dataset_name: Optional[str] = None,
 ) -> None:
+    """save results of each round"""
     summary: Dict = {
         "round": round_idx,
         "num_train": len(pool_manager.get_train_ids()),
@@ -149,8 +132,8 @@ def save_round_summary(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, indent=2))
 
-
 def aggregate_results(output_dir: Path) -> None:
+    """aggregate results of all rounds"""
     results = []
     for summary_path in sorted((output_dir).glob("round_*/round_summary.json")):
         results.append(json.loads(summary_path.read_text()))
@@ -159,10 +142,7 @@ def aggregate_results(output_dir: Path) -> None:
     logger.info("Aggregated AL results written to %s", out_path)
 
 
-# ------------------------------------------------------------------
 # Main loop
-# ------------------------------------------------------------------
-
 def run_al_loop(
     cfg: dict,
     strategy: str,
@@ -170,6 +150,8 @@ def run_al_loop(
     run_name: str,
     resume: bool,
 ) -> None:
+    """run the active learning loop"""
+    # get the configuration
     al_cfg = cfg.get("active_learning", {})
     pool_size = int(al_cfg.get("pool_size", 12000))
     initial_train_size = int(al_cfg.get("initial_train_size", 2500))
@@ -180,6 +162,7 @@ def run_al_loop(
     dataset_name = cfg["data"]["dataset_name"]
     processed_root = Path(cfg["paths"]["processed_root"])
 
+    # initialize the pool manager
     pool_manager = ALPoolManager(
         processed_root=processed_root,
         dataset_name=dataset_name,
@@ -198,6 +181,7 @@ def run_al_loop(
             "Pass --resume to continue, or choose a different --output-dir."
         )
 
+    # get the acquisition function
     acquisition_fn = get_acquisition_fn(strategy)
     # Use a separate RNG seeded per-round for reproducible acquisition
     base_rng = np.random.default_rng(seed)
@@ -210,7 +194,7 @@ def run_al_loop(
         "Starting AL loop: strategy=%s, rounds=%d, resume_from_round=%d",
         strategy, num_rounds, start_round,
     )
-
+    
     for round_idx in range(start_round, num_rounds + 1):
         logger.info("--- Round %d / %d ---", round_idx, num_rounds)
         logger.info(
@@ -219,7 +203,7 @@ def run_al_loop(
             len(pool_manager.get_pool_ids()),
         )
 
-        # Build round-specific config: deep copy + override splits_file
+        # Build round-specific config
         round_cfg = copy.deepcopy(cfg)
         round_cfg["data"]["splits_file"] = str(pool_manager.get_current_splits_file(round_idx))
         round_cfg["train"]["resume_checkpoint"] = ""  # always train from scratch
@@ -307,6 +291,8 @@ def run_al_loop_diversity(
     resume: bool,
     Use_propagation: bool = False,
 ) -> None:
+    """run the active learning loop for diversity strategy only"""
+    # get the configuration
     al_cfg = cfg.get("active_learning", {})
     pool_size = int(al_cfg.get("pool_size", 12000))
     initial_train_size = int(al_cfg.get("initial_train_size", 2500))
@@ -337,6 +323,7 @@ def run_al_loop_diversity(
 
     graph_embedding_by_id: Optional[Dict[str, np.ndarray]] = None
     if strategy == "diversity":
+        # get the pool candidates
         original_splits_path = processed_root / dataset_name / "splits.json"
         splits_json = json.loads(original_splits_path.read_text())
         all_train_ids = sorted(splits_json.get("train", []))
@@ -356,17 +343,18 @@ def run_al_loop_diversity(
             cache_graphs=False,
             splits_file=cand_splits_path,
         )
-
+        # get the graph embeddings, may propagate the node features
         if Use_propagation:
             per_graph = propagate_graph_embeddings_all(div_ds)
         else:
             per_graph = get_original_node_features(div_ds)
 
+        # average pooling
         graph_embedding_by_id = {
             sid: emb.mean(axis=0).astype(np.float32)
             for sid, emb in zip(div_ds.sample_ids, per_graph)
         }
-
+    # get the acquisition function
     acquisition_fn = get_acquisition_fn(strategy)
     # Use a separate RNG seeded per-round for reproducible acquisition
     base_rng = np.random.default_rng(seed)
@@ -469,9 +457,6 @@ def run_al_loop_diversity(
     aggregate_results(output_dir)
     logger.info("AL loop complete.")
 
-# ------------------------------------------------------------------
-# CLI
-# ------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Active learning loop for PLM distillation")

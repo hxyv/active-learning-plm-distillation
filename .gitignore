@@ -25,6 +25,9 @@ outputs/
 logs/
 wandb/
 
+# Large archives (do not commit)
+*.zip
+
 # Report drafts
 reprot.txt
 report.txt
