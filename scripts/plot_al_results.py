@@ -29,8 +29,10 @@ If --output-dir is omitted, plots are saved next to the first results file.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
+from collections import OrderedDict
 from pathlib import Path
 
 # Ensure project root is on sys.path when run as a script.
@@ -82,6 +84,120 @@ def extract_curve(results: List[Dict]) -> tuple:
         np.array(test_acc),
         np.array(test_ce),
     )
+
+
+def _load_train_curve(run_dir: Path, keys: List[str]) -> Dict[str, List[float]]:
+    """Read per-round final-epoch train metrics from ``round_NN/history.csv``.
+
+    Returns a dict of metric_key -> list of per-round values (last epoch of each
+    round's history). Missing columns are silently skipped.
+    """
+    round_dirs = sorted(
+        [d for d in run_dir.iterdir() if d.is_dir() and d.name.startswith("round_")],
+        key=lambda d: int(d.name.split("_")[-1]),
+    )
+    out: Dict[str, List[float]] = {k: [] for k in keys}
+    for rd in round_dirs:
+        hist = rd / "history.csv"
+        if not hist.exists():
+            continue
+        last = None
+        with hist.open() as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                last = row
+        if last is None:
+            continue
+        for k in keys:
+            if k in last:
+                out[k].append(float(last[k]))
+    return out
+
+
+def plot_train_test_comparison(
+    results_list: List[List[Dict]],
+    labels: List[str],
+    run_dirs: List[Path],
+    output_dir: Path,
+    offline_metrics: Optional[Dict[str, float]] = None,
+) -> None:
+    """2x2 panel comparing train vs test across strategies.
+
+    Panels: teacher top-1 acc, DSSP acc, total loss, teacher CE.
+    Each strategy gets a color (duplicate labels are averaged across seeds,
+    with a min-max shaded band). Train is dashed, test is solid. Offline
+    baseline, if supplied, is drawn as a horizontal dotted reference.
+    """
+    metric_pairs = [
+        ("test_teacher_top1_acc", "train_teacher_top1_acc", "Teacher top-1 SS8 accuracy"),
+        ("test_dssp_acc",         "train_dssp_acc",         "DSSP accuracy"),
+        ("test_total_loss",       "train_total_loss",       "Total loss"),
+        ("test_teacher_ce",       "train_teacher_ce",       "Teacher CE loss"),
+    ]
+
+    # Group by label (label duplicates = seeds of the same strategy).
+    groups: "OrderedDict[str, List]" = OrderedDict()
+    for r, lab, d in zip(results_list, labels, run_dirs):
+        groups.setdefault(lab, []).append((r, d))
+
+    # Fixed colour cycle, same colour per strategy across all 4 panels.
+    cmap = plt.get_cmap("tab10")
+    color_for = {lab: cmap(i % 10) for i, lab in enumerate(groups.keys())}
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    axes = axes.flatten()
+
+    for i, (test_key, train_key, title) in enumerate(metric_pairs):
+        ax = axes[i]
+        for label, runs in groups.items():
+            color = color_for[label]
+            seed_x, seed_test, seed_train = [], [], []
+            for r_results, r_dir in runs:
+                x = np.array([rd["num_train"] for rd in r_results], dtype=float)
+                y_test = np.array(
+                    [rd["metrics"].get(test_key, np.nan) for rd in r_results], dtype=float
+                )
+                train_curve = _load_train_curve(r_dir, [train_key]).get(train_key, [])
+                n = min(len(x), len(train_curve))
+                if n == 0:
+                    continue
+                seed_x.append(x[:n])
+                seed_test.append(y_test[:n])
+                seed_train.append(np.array(train_curve[:n], dtype=float))
+            if not seed_test:
+                continue
+            # Align to the shortest seed (in case one finished fewer rounds).
+            n_min = min(len(a) for a in seed_test)
+            x_mean = seed_x[0][:n_min]
+            test_arr = np.stack([a[:n_min] for a in seed_test])
+            train_arr = np.stack([a[:n_min] for a in seed_train])
+
+            ax.plot(x_mean, test_arr.mean(0), "-", marker="o", markersize=3,
+                    color=color, label=f"{label} (test)")
+            ax.plot(x_mean, train_arr.mean(0), "--", marker="s", markersize=3,
+                    color=color, alpha=0.75, label=f"{label} (train)")
+            if test_arr.shape[0] > 1:
+                ax.fill_between(x_mean, test_arr.min(0), test_arr.max(0),
+                                color=color, alpha=0.12, linewidth=0)
+                ax.fill_between(x_mean, train_arr.min(0), train_arr.max(0),
+                                color=color, alpha=0.06, linewidth=0)
+
+        if offline_metrics and test_key in offline_metrics:
+            ax.axhline(offline_metrics[test_key], linestyle=":", color="black",
+                       linewidth=1.2, label=f"offline (test={offline_metrics[test_key]:.3f})")
+
+        ax.set_xlabel("Labeled proteins")
+        ax.set_ylabel(title)
+        ax.set_title(title)
+        ax.legend(fontsize=7, ncol=2, loc="best")
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle("AL strategy comparison — train vs test metrics", fontsize=13)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    out_path = output_dir / "al_train_test_comparison.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {out_path}")
 
 
 def plot_learning_curves(
@@ -443,6 +559,11 @@ def parse_args() -> argparse.Namespace:
         "--composition", action="store_true",
         help="Also plot per-round SS8 composition for each strategy",
     )
+    parser.add_argument(
+        "--offline", type=Path, default=None,
+        help="Path to an offline-baseline run directory containing metrics_final.json; "
+             "drawn as a horizontal reference line in the train/test comparison plot.",
+    )
     return parser.parse_args()
 
 
@@ -461,8 +582,19 @@ def main() -> None:
     print(f"Saving plots to: {args.output_dir}")
 
     results_list = [load_results(p) for p in args.results]
+    run_dirs = [p.parent for p in args.results]
+
+    offline_metrics: Optional[Dict[str, float]] = None
+    if args.offline is not None:
+        offline_json = args.offline / "metrics_final.json"
+        if offline_json.exists():
+            offline_metrics = json.loads(offline_json.read_text())
+            print(f"Loaded offline baseline metrics from {offline_json}")
+        else:
+            print(f"Warning: {offline_json} not found; offline reference line will be omitted.")
 
     plot_learning_curves(results_list, labels, args.output_dir)
+    plot_train_test_comparison(results_list, labels, run_dirs, args.output_dir, offline_metrics)
     plot_pool_uncertainty(results_list, labels, args.output_dir)
     plot_random_overlap(results_list, labels, args.output_dir)
     plot_acquired_length(results_list, labels, args.output_dir)
