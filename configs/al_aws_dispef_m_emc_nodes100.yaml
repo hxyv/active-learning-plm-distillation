@@ -1,0 +1,84 @@
+paths:
+  project_root: /opt/dlami/nvme/esm3_gnn_distill_baseline
+  raw_dispef_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/data/raw/dispef
+  processed_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/data/processed
+  teacher_cache_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/cache/teacher
+  outputs_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/outputs
+  checkpoints_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/checkpoints
+  logs_root: /opt/dlami/nvme/esm3_gnn_distill_baseline/logs
+
+
+data:
+  dataset_name: dispef_m
+  cache_graphs: false
+  # splits_file is set at runtime by al_loop.py; leave null here
+  splits_file: null
+
+graph:
+  cutoff: 0.001
+  max_neighbors: 0
+
+model:
+  name: schake
+  hidden_channels: 32
+  num_layers: 2
+  kernel_size: 18
+  sake_low_cut: 0.25
+  sake_high_cut: 1.0
+  schnet_low_cut: 1.0
+  schnet_high_cut: 2.5
+  max_num_neigh: 10000
+  num_heads: 4
+  num_out_layers: 3
+  mc_dropout_p: 0.1
+
+train:
+  seed: 42
+  device: auto
+  epochs: 120
+  batch_size: 48
+  num_workers: 6
+  mixed_precision: true
+  multi_gpu: false
+
+  lr: 1.5e-3
+  weight_decay: 1.0e-6
+  lr_step_size: 3
+  lr_gamma: 0.9
+
+  teacher_loss_type: soft_ce
+  distill_temperature: 1.0
+  lambda_teacher: 1.0
+  lambda_dssp: 1.0
+  require_dssp_labels: true
+
+  use_validation: true
+  early_stopping_patience: 20
+  checkpoint_every: 10
+  log_every_steps: 200
+  resume_checkpoint: ""
+
+active_learning:
+  # all-node EMC is very slow.
+  #   emc_max_pool_graphs — max proteins randomly drawn from the pool to score per round.
+  #   emc_max_nodes_per_graph — max nodes randomly drawn per graph for the inner EMC sum
+  strategy: emc
+  pool_size: 12000          
+  initial_train_size: 2500  
+  budget_per_round: 500
+
+  emc_max_pool_graphs: 700
+  emc_max_nodes_per_graph: 100
+  num_rounds: 15
+  seed: 42
+
+wandb:
+  enabled: true
+  entity: ""
+  project: "pLM_KD"
+  name: "aws_al_emc_nodes100"
+  notes: ""
+  tags: ["aws", "active_learning", "emc", "emc_nodes100"]
+
+eval:
+  batch_size: 24
